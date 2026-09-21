@@ -1,6 +1,6 @@
 name: flet-windows-build
 
-# OSMU_cjc Flet 데스크톱 앱의 Windows용 .exe를 빌드한다.
+# OSMU_thestitch Flet 데스크톱 앱의 Windows용 .exe를 빌드한다.
 #
 # flet_app/main.py는 sys.path.insert(0, PROJECT_ROOT)로 자기 부모 디렉터리를
 # 경로에 넣어 core/, ai_workers/, 최상위 simulators/(HTML 생성용 — flet_app/simulators/
@@ -114,6 +114,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: osmu-cjc-windows-build
+          name: osmu-thestitch-windows-build
           path: stage/build/windows
           if-no-files-found: warn
