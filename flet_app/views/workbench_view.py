@@ -148,7 +148,7 @@ def build(page: ft.Page, state: AppState) -> ft.Control:
     # 위쪽으로 떠오르는데, 위에 여백이 전혀 없으면 그 라벨 글자가 컨테이너
     # 위 경계에 잘려 반만 보인다(실제로 재현됨). 약간의 위쪽 패딩만으로
     # 라벨이 뜰 공간을 확보한다.
-    content_box = ft.Container(expand=True, padding=ft.padding.only(top=8))
+    content_box = ft.Container(expand=True, padding=ft.Padding(top=8))
     sim_box = ft.Container(expand=True)
     sim_state = {"channel": "naver", "is_mobile": False, "show_dead_zone": True}
     selector = ft.Dropdown(expand=True, label="작업할 콘텐츠")
