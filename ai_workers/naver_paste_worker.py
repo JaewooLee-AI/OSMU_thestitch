@@ -241,7 +241,7 @@ def _dismiss_draft_restore_popup(page, editor_frame, timeout_s: float = 120.0) -
     )
 
 
-def _query_selector_retry(editor_frame, selectors: list[str], timeout_s: float = 3.0):
+def _query_selector_retry(editor_frame, selectors: list[str], timeout_s: float = 8.0):
     """Poll for a visible match instead of a single query_selector call.
 
     Right after _dismiss_draft_restore_popup() clicks 취소, Naver's editor is
@@ -251,6 +251,12 @@ def _query_selector_retry(editor_frame, selectors: list[str], timeout_s: float =
     match) — a single immediate query_selector can catch it mid-redraw and
     find nothing. Retrying for a few seconds rides out that transition
     instead of giving up on the first empty result.
+
+    8s (not the original 3s): live testing showed the *slower* the person is
+    to dismiss the popup, the longer this re-initialization drags on — a
+    popup left open a while before being cancelled seems to make Naver do a
+    heavier reload/cleanup than an immediate cancel does. 3s wasn't enough
+    margin for that case.
     """
     deadline = time.time() + timeout_s
     while time.time() < deadline:
@@ -266,7 +272,7 @@ def _query_selector_retry(editor_frame, selectors: list[str], timeout_s: float =
 
 
 
-def _click_until_focused(editor_frame, el, when: str, attempts: int = 6) -> bool:
+def _click_until_focused(editor_frame, el, when: str, attempts: int = 15) -> bool:
     """click(force=True) "succeeds" (no exception) even when the real
     editing surface — a nested iframe inside editor_frame — hasn't finished
     initializing yet, in which case focus silently stays on document.body
@@ -514,7 +520,7 @@ def run(campaign_id: str) -> None:
                 # body_el이 이제 DOM에서 떨어져 나갔을 수 있어), 클릭 직전에
                 # 한 번 더 찾는다 — 못 찾으면 예전 핸들이라도 시도해본다.
                 body_el_refocus = _query_selector_retry(
-                    editor_frame, [".se-main-container", ".se-component-text", ".se-content"], timeout_s=1.5
+                    editor_frame, [".se-main-container", ".se-component-text", ".se-content"], timeout_s=4.0
                 ) or body_el
                 if body_el_refocus:
                     _click_until_focused(editor_frame, body_el_refocus, "body refocus (before paste loop)")
@@ -558,7 +564,7 @@ def run(campaign_id: str) -> None:
                 # 제목이 비어 있었는데도 이 안전장치가 전혀 작동하지 않은 채로
                 # "paste complete"까지 가버린 사례가 있었다.
                 if title.strip():
-                    fresh_title_el = _query_selector_retry(editor_frame, title_selectors, timeout_s=1.5) or title_el
+                    fresh_title_el = _query_selector_retry(editor_frame, title_selectors, timeout_s=4.0) or title_el
                     current_title = ""
                     if fresh_title_el:
                         try:
