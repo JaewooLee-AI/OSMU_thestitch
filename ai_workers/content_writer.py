@@ -218,7 +218,17 @@ def _recommendation(report: Dict) -> Dict:
 
 
 def _report(progress: Progress, message: str) -> None:
-    print(f"[content_writer] {message}")
+    # 이 print()는 순수 콘솔 디버그용이라 실패해도 무해해야 한다 — 그런데
+    # Windows 콘솔의 기본 코드페이지(한국어 환경은 cp949)는 여기 메시지에
+    # 흔히 섞이는 이모지(🔍·⚖️·📖 등)를 인코딩하지 못해 UnicodeEncodeError를
+    # 던졌고, 그게 잡히지 않은 채 run_pipeline 전체를 그 자리에서 죽여서
+    # progress(message)(=화면 진행 표시)가 호출조차 되지 못했다. 콘솔에
+    # 못 찍는 것과 실제 생성 파이프라인이 실패하는 것은 전혀 다른 문제라
+    # 여기서 확실히 분리한다.
+    try:
+        print(f"[content_writer] {message}")
+    except UnicodeEncodeError:
+        pass
     if progress:
         progress(message)
 

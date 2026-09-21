@@ -96,8 +96,18 @@ def _scrape_with_requests(url: str) -> tuple[str, str, str]:
 def _scrape_with_playwright(url: str) -> tuple[str, str, str]:
     from playwright.sync_api import sync_playwright
 
+    from ai_workers.naver_publisher import launch_browser
+
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        # p.chromium.launch()는 Playwright 번들 Chromium(playwright install로
+        # 따로 받아야 함)이 있어야만 동작한다. 이 프로젝트는 네이버 발행
+        # 자동화(naver_publisher.launch_browser)에서 이미 시스템 Chrome을
+        # 우선 쓰고 번들 Chromium은 마지막 폴백으로만 쓰는데, 여기는 그
+        # 폴백 체인 없이 번들 Chromium만 바로 불러서 — 번들 Chromium이 설치
+        # 안 된 환경(예: 이 Windows 개발 PC)에서는 launch() 자체가 예외를
+        # 던지고, 그게 scrape_article()에서 조용히 삼켜져 "본문 0자" 에러로
+        # 나타났다. 같은 폴백 로직을 재사용해 시스템 Chrome을 먼저 쓴다.
+        browser = launch_browser(p, headless=True)
         page = browser.new_page()
         try:
             # "networkidle" frequently never fires on Google News redirect

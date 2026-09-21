@@ -18,5 +18,10 @@ feedparser>=6.0
 # Naver semi-automatic publish (needs `playwright install chromium` once)
 playwright>=1.46
 pyperclip>=1.9
+# Windows-only: writes the real HTML clipboard format (CF_HTML) so pasted
+# content renders as formatted paragraphs instead of literal <p> tags —
+# without it, core/clipboard_utils.py silently falls back to pyperclip's
+# plain-text copy on any Windows machine that's missing this package.
+pywin32; platform_system == "Windows"
 
 # NOTE: no `supabase` — the whole data layer is local SQLite (core/db.py).

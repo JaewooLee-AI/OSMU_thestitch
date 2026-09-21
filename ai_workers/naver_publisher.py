@@ -26,8 +26,21 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
+from core.db import DATA_DIR
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-NAVER_STATE_FILE = PROJECT_ROOT / "data" / "naver_state.json"
+# core.db.DATA_DIR (not PROJECT_ROOT/"data") — this must be the exact same
+# directory the rest of the app reads/writes its SQLite DB from. DATA_DIR
+# falls back to a per-user OS folder when PROJECT_ROOT/data doesn't exist yet
+# (see core/db.py's _default_data_dir). Hardcoding PROJECT_ROOT/"data" here
+# used to create that directory as a side effect of the first Naver login
+# (via NAVER_STATE_FILE.parent.mkdir below) — which then made every *new*
+# process (e.g. the naver_paste_worker subprocess trigger_naver_publish
+# spawns) re-resolve DATA_DIR to that now-existing-but-empty folder instead
+# of the per-user one the already-running app was using, so the publish
+# worker looked up campaigns in a different, empty database and always
+# reported "campaign not found".
+NAVER_STATE_FILE = DATA_DIR / "naver_state.json"
 
 
 # Publishing runs as browser automation, so its failures arrive as Playwright
@@ -40,6 +53,7 @@ NAVER_STATE_FILE = PROJECT_ROOT / "data" / "naver_state.json"
 DETAIL_SEPARATOR = "\n\n[기술 상세]\n"
 
 _ERROR_HINTS = (
+    (("팝업", "이어서 작성"), "네이버가 '이어서 작성하시겠습니까?' 같은 팝업을 띄웠는데 자동으로 닫지 못했습니다. [다시 게시]로 한 번 더 시도해주세요. 계속 실패하면 네이버 블로그에 직접 로그인해 임시저장된 글이 있는지 확인해주세요."),
     (("nidlogin", "login", "로그인"), "네이버 로그인이 풀렸습니다. 위에서 다시 로그인한 뒤 게시해주세요."),
     (("timeout", "timed out"), "네이버 편집기가 제때 열리지 않았습니다. 잠시 후 다시 시도해주세요."),
     (("net::err", "econnrefused", "dns", "connection"), "네이버에 연결하지 못했습니다. 인터넷 연결을 확인한 뒤 다시 시도해주세요."),

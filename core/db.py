@@ -17,12 +17,38 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = Path(os.environ.get("OSMU_DATA_DIR", PROJECT_ROOT / "data"))
+
+
+def _default_data_dir() -> Path:
+    """Where data/ lives when OSMU_DATA_DIR isn't set.
+
+    A packaged desktop app's install location (e.g. Program Files) may not be
+    writable, so a fresh install needs a per-user OS data folder instead of
+    PROJECT_ROOT/data. But this repo also has a live Streamlit install whose
+    data/ already exists next to the project — for that install, switching
+    the default out from under it would make its data look like it vanished.
+    So: keep using PROJECT_ROOT/data if it's already there (existing installs
+    untouched), and only fall back to a per-user folder for a brand new one.
+    """
+    existing = PROJECT_ROOT / "data"
+    if existing.exists():
+        return existing
+
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "OSMU_THESTITCH"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "OSMU_THESTITCH"
+    return Path.home() / ".local" / "share" / "OSMU_THESTITCH"
+
+
+DATA_DIR = Path(os.environ["OSMU_DATA_DIR"]) if os.environ.get("OSMU_DATA_DIR") else _default_data_dir()
 DB_PATH = DATA_DIR / "osmu.db"
 ASSETS_DIR = DATA_DIR / "assets"
 

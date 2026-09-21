@@ -1,0 +1,119 @@
+name: flet-windows-build
+
+# OSMU_cjc Flet 데스크톱 앱의 Windows용 .exe를 빌드한다.
+#
+# flet_app/main.py는 sys.path.insert(0, PROJECT_ROOT)로 자기 부모 디렉터리를
+# 경로에 넣어 core/, ai_workers/, 최상위 simulators/(HTML 생성용 — flet_app/simulators/
+# 와는 다른 별개 패키지)를 그대로 import한다. `flet build`는 지정한 앱 경로
+# "안"의 파일만 패키징하므로, flet_app/만 놓고 빌드하면 그 바깥의 세 패키지가
+# 통째로 빠져 실행 즉시 ImportError가 난다. 그래서 빌드 직전에 오늘의 저장소
+# 구조를 그대로 복제한 stage/ 디렉터리(core/, ai_workers/, simulators/, flet_app/를
+# 형제로 나란히)를 만든다. 이름 충돌은 없다 — flet_app/simulators/는 flet_app
+# 복사본 안에 그대로 얹혀가고, 최상위 simulators/는 그 옆의 형제 폴더로 별도
+# 위치한다.
+#
+# `flet build`는 앱 경로 "루트"에 진입 스크립트가 직접 있어야 한다(--module-name은
+# 하위 디렉터리를 가리키는 점(.) 표기를 지원하지 않는다 — 첫 시도에서
+# "flet_app.py not found in the root" 에러로 확인됨). 그래서 flet_app/main.py를
+# stage/main.py로도 복사해 루트에 둔다. 그 파일의 sys.path.insert(parent.parent)
+# 계산은 이 위치에서는 안 맞는 경로를 가리키지만 해가 되지는 않는다 — Python이
+# 실행 스크립트의 디렉터리(stage/)를 기본으로 sys.path에 넣어주므로 core/,
+# ai_workers/, simulators/, flet_app/이 어차피 stage/의 형제로 이미 올바르게
+# 잡힌다. 소스 코드는 손대지 않는다: git의 flet_app/main.py는 그대로 두고,
+# 빌드 스테이징 단계에서만 복사본을 하나 더 둔다.
+
+on:
+  push:
+    paths:
+      - "flet_app/**"
+      - "core/**"
+      - "ai_workers/**"
+      - "simulators/**"
+      - ".github/workflows/flet-windows-build.yml"
+  workflow_dispatch:
+
+env:
+  # 없으면 flet build의 rich-console 진행 표시가 체크마크 이모지를 Windows
+  # 러너 기본 cp1252 콘솔 코드페이지로 출력하려다 UnicodeEncodeError로
+  # 빌드가 시작하기도 전에 죽는다 (spike에서 이미 확인됨).
+  PYTHONUTF8: "1"
+  FLET_CLI_NO_RICH_OUTPUT: "1"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        # flet_app/pyproject.toml을 pip install하지 않고 의존성을 그대로
+        # 나열한다 — 그 파일은 정식 패키징 레이아웃(빌드 백엔드 지정 등)이
+        # 아니라서 `pip install .`이 실패할 위험이 있다 (spike와 같은 근거).
+        run: |
+          python -m pip install --upgrade pip
+          pip install flet python-dotenv cryptography openai anthropic google-genai `
+            requests beautifulsoup4 feedparser playwright pyperclip Pillow pywin32
+
+      - name: Download Playwright's Chromium fallback + driver
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: "0"
+        run: playwright install chromium
+
+      - name: Diagnostic - does ai_workers.naver_publisher.launch_browser() work here?
+        # 지인 PC(Chrome 이미 설치됨, Streamlit으로 실전 사용 중)에서 네이버
+        # 로그인 버튼을 눌러도 반응이 없었다는 제보 때문에 추가한 스텝이다.
+        # 실제 게시 기능이 쓰는 함수를 그대로 호출해, 이 빌드가 참조하는 것과
+        # 똑같은 site-packages(방금 설치한 playwright)에서 Chrome이 실제로
+        # 뜨는지 exe 빌드 전에 확인한다 — exe를 이 러너에서 실행해볼 수는
+        # 없지만(Flet 창 자체가 이 러너에서 안 뜨는 건 이전에 이미 확인됨),
+        # 번들될 의존성 집합이 Chrome을 띄울 수 있는지는 이걸로 미리 걸러낸다.
+        shell: bash
+        run: |
+          python - <<'PYEOF'
+          import sys
+          sys.path.insert(0, ".")
+          from ai_workers.naver_publisher import launch_browser
+          from playwright.sync_api import sync_playwright
+
+          with sync_playwright() as p:
+              browser = launch_browser(p, headless=False)
+              page = browser.new_page()
+              page.set_content("<title>diag-ok</title>")
+              title = page.title()
+              browser.close()
+
+          assert title == "diag-ok", f"unexpected title: {title!r}"
+          print("Playwright Chrome launch OK via launch_browser()")
+          PYEOF
+
+      - name: Stage project root for flet build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path stage | Out-Null
+          Copy-Item -Recurse -Path core, ai_workers, simulators, flet_app -Destination stage
+          Copy-Item -Path flet_app/pyproject.toml -Destination stage/pyproject.toml
+          Copy-Item -Path flet_app/main.py -Destination stage/main.py
+          Write-Host "----- stage/ 트리 -----"
+          Get-ChildItem -Recurse stage | Select-Object -First 80 FullName | Format-Table -AutoSize
+
+      - name: flet build windows
+        run: flet build windows stage --yes --verbose
+
+      - name: Confirm exe was produced
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path "stage/build/windows" -Filter "*.exe" -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "No .exe found under stage/build/windows — flet build produced no executable." }
+          Write-Host "Built: $($exe.FullName)"
+
+      - name: Upload build artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: osmu-cjc-windows-build
+          path: stage/build/windows
+          if-no-files-found: warn
