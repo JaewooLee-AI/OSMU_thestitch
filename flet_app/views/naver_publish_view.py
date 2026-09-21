@@ -5,11 +5,18 @@
 순서대로 붙여넣어주고, 담당자가 직접 [발행]을 눌러야 한다. `발행` 팝업의 태그
 칸은 자동화가 아예 닿지 않아, 여기서 태그를 보여주고 복사만 시킨다.
 
-`open_naver_login_session()`은 최대 2분까지 블로킹되는 호출이라 워크벤치의
-초안 생성과 같은 이유로 `page.run_thread()`로 돌린다 — 그러지 않으면 로그인
-창이 열려 있는 동안 앱 전체가 멈춘 것처럼 보인다. 반면 `trigger_naver_publish`
-는 원본처럼 detached subprocess를 띄우고 바로 반환하는 non-blocking 호출이라
-별도 스레드가 필요 없다.
+`open_naver_login_session()`과 게시 둘 다 최대 몇 분까지 블로킹되는 호출이라
+워크벤치의 초안 생성과 같은 이유로 `page.run_thread()`로 돌린다 — 그러지
+않으면 그 창이 열려 있는 동안 앱 전체가 멈춘 것처럼 보인다. 게시는 원래
+`ai_workers.naver_publisher.trigger_naver_publish()`(Streamlit용, detached
+subprocess로 naver_paste_worker.py를 띄움)를 썼는데, 패키징된 Flet exe(내장
+Python 런타임이라 새로 실행할 python.exe가 없음)에서 subprocess 실행 자체가
+"PathAccessException: Cannot create file, path =
+'ai_workers.naver_paste_worker' ..."로 실패하는 게 라이브로 확인됐다 —
+subprocess.Popen을 try/except로 감싸 스레드로 우회를 시도해도 같은 에러가
+재현되어, 이 환경에서는 그 실패가 평범한 Python 예외로 잡히지 않는 것으로
+보인다. 그래서 이 화면은 trigger_naver_publish()를 거치지 않고
+`naver_paste_worker.run()`을 여기서 직접 page.run_thread로 부른다.
 """
 from __future__ import annotations
 
@@ -18,12 +25,12 @@ import time
 import flet as ft
 
 import flet_app.simulators as sim
+from ai_workers import naver_paste_worker
 from ai_workers.naver_publisher import (
     clear_naver_session,
     naver_session_exists,
     open_naver_login_session,
     split_publish_error,
-    trigger_naver_publish,
 )
 from core import repo
 
@@ -152,10 +159,33 @@ def _build_card(
             ], spacing=8)
 
         def on_publish(e: ft.Event) -> None:
-            result = trigger_naver_publish(campaign_id)
-            publish_status.value = result["message"]
-            publish_status.color = "#1B6E3C" if result["success"] else "#B3261E"
+            # naver_publisher.trigger_naver_publish()는 원래 Streamlit용으로
+            # naver_paste_worker.py를 별도 python.exe 프로세스로 띄운다 —
+            # flet build windows로 패키징된 exe(내장 Python 런타임이라
+            # 새로 실행할 python.exe가 없음)에서는 이게 라이브로
+            # "PathAccessException: Cannot create file, path =
+            # 'ai_workers.naver_paste_worker' ..."로 실패하는 게 재확인됐다.
+            # trigger_naver_publish() 안에서 subprocess.Popen을 try/except로
+            # 감싸 스레드로 우회하는 방법도 시도했지만 같은 에러가 그대로
+            # 재현됐다 — 이 환경에서는 그 실패 자체가 평범한 Python
+            # 예외로 잡히지 않는 것으로 보인다. 그래서 Flet 쪽은 아예
+            # subprocess를 거치지 않고, 이미 검증된 방식(네이버 로그인과
+            # 동일하게 page.run_thread로 같은 프로세스 안 백그라운드
+            # 스레드)으로 naver_paste_worker.run()을 직접 부른다.
+            if not naver_session_exists():
+                publish_status.value = "네이버 로그인 세션이 없습니다. 먼저 로그인 세션을 저장하세요."
+                publish_status.color = "#B3261E"
+                publish_status.update()
+                return
+
+            publish_status.value = "게시 작업을 시작했습니다. 잠시 후 Chrome 창이 열리면 내용을 확인하고 [발행] 버튼을 직접 눌러주세요."
+            publish_status.color = "#1B6E3C"
             publish_status.update()
+
+            def _work() -> None:
+                naver_paste_worker.run(campaign_id)
+
+            page.run_thread(_work)
 
         buttons: list[ft.Control] = [
             ft.FilledButton(
