@@ -258,6 +258,17 @@ def _build_campaign_editor(page: ft.Page, campaign_id: str, scale: float, reload
             size=fs(11, scale), color=BRAND_COLORS["text_muted"],
         ))
 
+    if not controls:
+        # 뉴스 큐레이션에서 온 콘텐츠는 title_field 앞에 위 원문/원 기사 제목
+        # 텍스트가 먼저 오지만, 일반(수동) 콘텐츠는 title_field가 스크롤
+        # 영역의 진짜 첫 컨트롤이 된다 — 컨테이너에 top padding을 줘도
+        # (Container(expand=True, padding=...) 안의 스크롤 가능한 Column이
+        # 그 padding을 반영하지 않는 것으로 라이브에서 확인됨) 라벨이 위쪽에
+        # 잘리는 게 그대로였다. 그래서 padding에 기대는 대신, 실제로 자리를
+        # 차지하는 빈 컨트롤을 title_field 앞에 둔다 — 이러면 어떤 레이아웃
+        # 계산이든 title_field가 더 이상 "맨 위 첫 컨트롤"이 아니게 된다.
+        controls.append(ft.Container(height=4))
+
     title_field = ft.TextField(
         label="제목", value=campaign.get("title") or "",
         hint_text="비워두면 AI가 25자 이내로 지어줍니다", expand=True,
