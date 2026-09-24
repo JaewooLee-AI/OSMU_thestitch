@@ -5,19 +5,22 @@
 각 채널의 실제 레이아웃으로 미리 본 뒤 네이버에 반자동 게시합니다.
 
 기존 `OSMU_admin`(Streamlit + Supabase + 폴링 워커)과 `OSMU_web`(Next.js 워크벤치)을
-**하나의 Streamlit 앱 + 로컬 SQLite**로 통합한 것입니다.
+**하나의 Flet 데스크톱 앱 + 로컬 SQLite**로 통합한 것입니다. (중간 단계였던 Streamlit UI는 제거됐습니다.)
 
 ---
 
 ## 빠른 시작
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+.venv\Scripts\activate             # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium          # 네이버 게시 자동화용 (선택)
 
-streamlit run app.py
+python flet_app/main.py
 ```
+
+Windows용 .exe는 GitHub Actions(`.github/workflows/flet-windows-build.yml`)가 빌드합니다.
 
 첫 실행 시 `data/osmu.db`가 만들어지고, `company_info/`에서 정리한 브랜드 킷이 자동으로 채워집니다.
 그다음 **⚙️ 설정 → LLM 벤더**에서 API 키를 하나 이상 등록하고 [기본 생성 모델]을 지정하면 바로 사용할 수 있습니다.
@@ -38,14 +41,11 @@ streamlit run app.py
 | 사라진 것 | 이유 |
 |---|---|
 | Supabase Postgres | 생산자와 소비자가 같은 프로세스인 큐는 순수 오버헤드. SQLite 파일 하나로 충분 |
-| `worker_runner.py` 폴링 루프 | 생성이 `st.status` 안에서 동기 실행됨 |
+| `worker_runner.py` 폴링 루프 | 생성이 앱 프로세스 안 백그라운드 스레드에서 동기 실행됨 |
 | Supabase Realtime 구독 | 같은 프로세스라 그냥 리턴값 |
 | service_role 키 / RLS 정책 | 브라우저에 노출될 클라이언트가 없음 |
 | 30일 TTL cron + Edge Function | 무료 티어 500MB/1GB 한도를 우회하려던 장치. 로컬 디스크엔 한도가 없음 |
 
-**대신 잃은 것 하나:** OSMU_web은 Zustand로 타이핑 즉시 시뮬레이터가 다시 그려졌지만,
-여기서는 Streamlit의 rerun 왕복이 한 번 있습니다. 시뮬레이터를 "타이핑하며 보는" 용도가 아니라
-"완성된 초안을 발행 전에 검증하는" 용도로 쓰는 이 팀의 실제 작업 흐름에서는 감수할 만한 교환입니다.
 
 ---
 
@@ -126,7 +126,11 @@ streamlit run app.py
    출력: 저희 제품은 친환경적이며 국내에서도 보기 드물게 유해물질 저감 소재를 사용한 고급 굿즈입니다.
    ```
 
-2. **LLM 감사** — 사전에 없는 새로운 과장 표현을 잡아내고, 점수 + 지적 사항 + 교정본을 반환합니다.
+2. **LLM 감사** — 사전에 없는 새로운 과장 표현을 잡아내고, 점수 + 지적 사항 + **표현 단위 교정안**
+   (`문제 표현 → 교정 표현`)을 반환합니다. 글 전체를 다시 쓰게 하지 않으므로 응답이 짧아 잘릴 일이 없고,
+   지적하지 않은 문장이 몰래 바뀌지도 않습니다. 교정은 코드가 결정론적으로 적용합니다.
+   **감사가 실패하면(응답 잘림·형식 오류·API 오류) '통과'가 아니라 '검수 미완료'로 표시**합니다 —
+   예전에는 이 경우 100점 통과로 처리되어, 긴 글일수록 검수 없이 나갈 수 있었습니다.
    인스타 캡션과 X 스레드도 각자 브랜드 주장을 하는 별개 텍스트이므로 같은 감사를 거칩니다.
    단 X는 트윗 하나씩이 아니라 **스레드 전체를 한 번에** 감사합니다 —
    감사 시스템 프롬프트가 ~500토큰이라, 5개짜리 스레드를 낱개로 돌리면 300토큰짜리 내용을 보려고
@@ -174,8 +178,10 @@ streamlit run app.py
 
 1. [로그인 세션 저장] — Chrome 창이 열리고 직접 로그인하면 세션이 `data/naver_state.json`에 저장됩니다.
    (이 쿠키만은 DB에 넣지 않습니다. 살아 있는 발행 계정 접근 권한이라, 지우기 쉬운 파일 하나로 둡니다.)
-2. [지금 게시] — 별도 프로세스가 Chrome을 띄워 제목을 입력하고, 본문/사진을 **문서 순서대로 하나씩**
-   붙여 넣습니다. 마지막 [발행] 버튼은 담당자가 직접 누릅니다.
+2. [지금 게시] — 백그라운드 스레드가 Chrome을 띄워 제목을 입력하고, 본문/사진을 **문서 순서대로 하나씩**
+   붙여 넣습니다. 마지막 [발행] 버튼은 담당자가 직접 누릅니다. 게시 창은 담당자가 닫을 때까지 열려 있고,
+   자동으로 넣지 못한 사진·제목이 있으면 게시 화면에 경고로 표시됩니다. 같은 글을 두 번 누르거나
+   여러 글을 동시에 게시해도 클립보드가 섞이지 않도록 붙여넣기 단계는 한 번에 하나씩만 진행됩니다.
 3. [발행] 팝업의 태그 입력란은 자동화가 불가능하므로, 생성된 해시태그를 화면에서 복사해 붙여넣습니다.
 
 절대 headless로 돌리지 마세요. 봇 탐지와 최종 발행 클릭 모두 사람이 앞에 있다고 가정합니다.
@@ -185,26 +191,26 @@ streamlit run app.py
 ## 구조
 
 ```
-app.py                     st.navigation 진입점
+flet_app/
+  main.py                  데스크톱 앱 진입점 (내비게이션 레일)
+  views/                   6개 화면 (대시보드·워크벤치·뉴스·브랜드 킷·네이버 게시·설정)
+  simulators/              4채널 미리보기 (Flet 네이티브 컨트롤)
 core/
   db.py                    SQLite 스키마 · 커넥션 (WAL)
   repo.py                  데이터 접근 계층 (JSON-in-TEXT 인코딩 은닉)
   storage.py               로컬 파일 저장소 (Supabase Storage 대체) · 정규화 · 해시
   crypto_utils.py          AES-256-GCM API 키 암호화
   brand_seed.py            더스티치/더봄봄 브랜드 킷 시드 + 팔레트
-  theme.py / auth.py
 ai_workers/
   content_writer.py        통합 파이프라인 (뉴스 + 수동, 원래 2개였던 것)
   vision.py                ★ 토큰 최소화 이미지 분석 (캐시·배치·해상도·상한)
-  multi_llm_router.py      벤더 라우팅 + 실제 usage 기록
+  multi_llm_router.py      벤더 라우팅 + 실제 usage 기록 + 출력 잘림 감지·재시도
   prompt_builder.py        브랜드 킷 → 시스템 프롬프트
   guardrail.py             그린워싱 컴플라이언스 (2단 방어)
   seo_optimizer.py         네이버 키워드 밀도 검증·교정
   {instagram_caption,x_thread,shorts,naver_hashtag}_writer.py
   news_search.py / news_scraper.py
   naver_publisher.py / naver_paste_worker.py
-simulators/                4채널 HTML 렌더러 (OSMU_web React 컴포넌트 이식)
-views/                     7개 화면 (`pages/`가 아님 — app.py 주석 참고)
 data/                      osmu.db · assets/ · .master_key · naver_state.json  (git 제외)
 ```
 
@@ -216,7 +222,11 @@ data/                      osmu.db · assets/ · .master_key · naver_state.json
 4. SEO 키워드 밀도 — 2단계에서 *지시만* 한 것을 실제로 검증
 5. 금기어 사전 재적용 — 3·4단계는 새 LLM 출력이므로 결정론적 치환을 한 번 더
 6. 이미지 태그 백스톱 — 첨부 사진이 조용히 사라지지 않도록
-7. 인스타 / X / 쇼츠 / 네이버 태그 — best-effort, 실패해도 본문은 살림
+7. 인스타 / X / 쇼츠 / 네이버 태그 — 네 채널을 **병렬로** 생성, best-effort, 실패해도 본문은 살림
+
+2단계 직후 초안을 먼저 저장하므로, 이후 단계에서 API 오류가 나도 비용을 낸 초안은 편집기에 남습니다.
+같은 글에 생성·수정이 동시에 두 번 돌지 않도록 막고, 앱이 생성 도중 꺼졌다면 다음 실행 때 '실패'로
+표시해 다시 생성할 수 있게 합니다.
 
 ---
 
@@ -225,7 +235,8 @@ data/                      osmu.db · assets/ · .master_key · naver_state.json
 전부 `data/` 안에 있습니다: `osmu.db`(SQLite), `assets/`(사진), `.master_key`(API 키 암호화 키, 0600),
 `naver_state.json`(네이버 세션). 이 디렉터리만 백업하면 됩니다.
 
-`data/`를 클라우드에 동기화한다면 마스터 키는 밖으로 빼세요:
+`data/`를 클라우드에 동기화한다면 마스터 키는 밖으로 빼세요 (앱은 시작할 때 프로젝트 루트의 `.env`를 읽습니다.
+마스터 키를 찾지 못했는데 이미 암호화된 키가 저장돼 있으면, 새 키를 만들어 기존 키를 못 쓰게 만드는 대신 오류를 냅니다):
 
 ```bash
 python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"

@@ -1,4 +1,4 @@
-"""Flet port of views/02_workbench.py — 편집 패널 + 오른쪽 채널 시뮬레이터.
+"""편집 패널 + 오른쪽 채널 시뮬레이터.
 
 오른쪽 패널은 `simulators/*.py`가 만드는 HTML을 `st.components.v1.html`
 iframe에 그리던 원본과 달리, Flet의 WebView가 Windows를 지원하지 않아
@@ -321,11 +321,11 @@ def _build_campaign_editor(page: ft.Page, campaign_id: str, scale: float, reload
         ]),
     )
     mode_caption = ft.Text(
-        content_mode.MODES[mode_group.value]["caption"], size=fs(11, scale), color=BRAND_COLORS["text_muted"],
+        content_mode.describe(mode_group.value), size=fs(11, scale), color=BRAND_COLORS["text_muted"],
     )
 
     def on_mode_change(e: ft.Event) -> None:
-        mode_caption.value = content_mode.MODES[mode_group.value]["caption"]
+        mode_caption.value = content_mode.describe(mode_group.value)
         mode_caption.update()
 
     mode_group.on_change = on_mode_change
@@ -453,10 +453,16 @@ def _build_campaign_editor(page: ft.Page, campaign_id: str, scale: float, reload
         gen_status.update()
         refresh_sim()
 
-    can_generate = bool(memo_field.value.strip() or campaign.get("source_url"))
+    # 다른 화면에 갔다 돌아오면 이 편집기는 새로 만들어지므로, "생성 중 버튼 비활성"은 화면 상태가
+    # 아니라 DB의 status로 판단한다 — 그러지 않으면 같은 글에 생성이 두 번 돈다
+    # (content_writer도 repo.begin_processing으로 한 번 더 막는다).
+    is_processing = campaign.get("status") == "processing"
+    can_generate = bool(memo_field.value.strip() or campaign.get("source_url")) and not is_processing
     generate_button = ft.FilledButton("🪄 초안 생성", disabled=not can_generate, expand=True)
     generate_hint = ft.Text(
-        "메모를 입력하거나 뉴스 기사를 연결해야 초안을 생성할 수 있습니다.",
+        "⏳ 이 콘텐츠는 지금 생성·수정 중입니다. 끝난 뒤 다시 열면 결과가 보입니다."
+        if is_processing
+        else "메모를 입력하거나 뉴스 기사를 연결해야 초안을 생성할 수 있습니다.",
         size=fs(11, scale), color=BRAND_COLORS["text_muted"], visible=not can_generate,
     )
 
@@ -464,7 +470,7 @@ def _build_campaign_editor(page: ft.Page, campaign_id: str, scale: float, reload
         # generate_button은 이 화면을 처음 열 때의 memo_field 값으로 딱 한 번만
         # disabled가 정해진다 — on_change 없이는 메모를 입력해도 버튼이 계속
         # 비활성 상태로 굳어 있어 클릭할 수 없는 것처럼 보인다.
-        now_can_generate = bool(memo_field.value.strip() or campaign.get("source_url"))
+        now_can_generate = bool(memo_field.value.strip() or campaign.get("source_url")) and not is_processing
         generate_button.disabled = not now_can_generate
         generate_hint.visible = not now_can_generate
         generate_button.update()
@@ -602,7 +608,9 @@ def _build_campaign_editor(page: ft.Page, campaign_id: str, scale: float, reload
 
         queue_status = ft.Text("", size=fs(12, scale), color="#1B6E3C")
         queue_spinner = ft.ProgressRing(width=16, height=16, stroke_width=2, visible=False)
-        regenerate_button = ft.OutlinedButton("🔁 초안 다시 생성", on_click=on_regenerate, expand=True)
+        regenerate_button = ft.OutlinedButton(
+            "🔁 초안 다시 생성", on_click=on_regenerate, expand=True, disabled=is_processing
+        )
         controls += [
             ft.Row([
                 ft.FilledButton("🚀 네이버 게시 대기열로", on_click=on_queue, expand=True),
@@ -646,7 +654,7 @@ def _build_channel_tabs(page: ft.Page, campaign: dict, title_field: ft.TextField
     )
     revise_status = ft.Text("", size=fs(12, scale))
     revise_spinner = ft.ProgressRing(width=16, height=16, stroke_width=2, visible=False)
-    revise_button = ft.FilledButton("✏️ 수정 반영")
+    revise_button = ft.FilledButton("✏️ 수정 반영", disabled=campaign.get("status") == "processing")
 
     def on_revise(e: ft.Event) -> None:
         repo.update_campaign(campaign_id, content=body_field.value)
@@ -695,6 +703,32 @@ def _build_channel_tabs(page: ft.Page, campaign: dict, title_field: ft.TextField
 
     revise_button.on_click = on_revise
 
+    # 수정 요청은 그 글 한 편에만 적용된다 — 다음 초안은 브랜드 킷의 톤앤매너로 처음부터
+    # 쓰기 때문에, "문장 짧게" 같은 요청을 매번 다시 적어야 했다(고객 문의로 확인된
+    # 불편). 같은 요청을 버튼 하나로 톤앤매너 가이드에 영구 규칙으로 추가한다.
+    save_rule_status = ft.Text("", size=fs(11, scale))
+
+    def on_save_rule(e: ft.Event) -> None:
+        rule = " ".join((revise_field.value or "").split())
+        if not rule:
+            save_rule_status.value = "위 [수정 요청] 칸에 남길 규칙을 먼저 적어주세요."
+            save_rule_status.color = "#B3261E"
+            save_rule_status.update()
+            return
+        added = repo.append_tone_rule(rule)
+        save_rule_status.value = (
+            "✅ 브랜드 킷 톤앤매너 가이드에 추가했습니다. 다음 초안부터 항상 적용됩니다. "
+            "(브랜드 킷 화면에서 고치거나 지울 수 있어요)"
+            if added else "이미 톤앤매너 가이드에 있는 규칙입니다."
+        )
+        save_rule_status.color = "#1B6E3C"
+        save_rule_status.update()
+
+    save_rule_button = ft.OutlinedButton(
+        "📌 이 요청을 브랜드 킷에 저장", on_click=on_save_rule,
+        tooltip="이 글만이 아니라 앞으로 만들 모든 초안에 이 요청을 적용합니다.",
+    )
+
     naver_tab = ft.Column(
         [
             ft.Text(f"제목 · {len(title_field.value)}자", size=fs(11, scale), color=BRAND_COLORS["text_muted"]),
@@ -715,7 +749,13 @@ def _build_channel_tabs(page: ft.Page, campaign: dict, title_field: ft.TextField
             ),
             revise_field,
             length_group,
-            revise_button,
+            ft.Row([revise_button, save_rule_button], spacing=8, wrap=True),
+            save_rule_status,
+            ft.Text(
+                "[✏️ 수정 반영]은 이 글 한 편에만 적용됩니다. 매번 같은 요청을 하고 있다면 "
+                "[📌 브랜드 킷에 저장]으로 앞으로의 모든 초안에 적용하세요.",
+                size=fs(10, scale), color=BRAND_COLORS["text_muted"],
+            ),
             ft.Text("요청 없이 눌러도 맞춤법·오탈자 교정은 항상 실행됩니다.", size=fs(10, scale), color=BRAND_COLORS["text_muted"]),
             ft.Row([revise_spinner, revise_status], spacing=8),
         ],
@@ -853,6 +893,17 @@ def _build_report_controls(campaign: dict, scale: float) -> list[ft.Control]:
             controls.append(_status_box(
                 f"{ch_label} 컴플라이언스 미해결 — " + " / ".join(compliance.get("issues") or []), scale, "warning",
             ))
+        # 자동으로 지운 것은 담당자가 알아야 합니다 — 문장이 빠져 흐름이 어색할 수 있고,
+        # 인증 품목을 정확히 짚는 문장으로 직접 되살리고 싶을 수도 있습니다.
+        removed = compliance.get("auto_removed") or []
+        dropped_tags = compliance.get("tags_removed") or []
+        if removed or dropped_tags:
+            parts = []
+            if removed:
+                parts.append("인증 범위를 넓힌 문장을 삭제했습니다: " + " / ".join(f"「{s}」" for s in removed))
+            if dropped_tags:
+                parts.append("본문에 인증 언급이 없어 해시태그를 뺐습니다: " + " ".join(dropped_tags))
+            controls.append(_status_box(f"{ch_label} 자동 정리 — " + " · ".join(parts), scale, "info"))
 
     if not report:
         return controls
@@ -862,7 +913,7 @@ def _build_report_controls(campaign: dict, scale: float) -> list[ft.Control]:
         body.append(ft.Text("가드레일이 꺼진 상태로 생성되어 검수를 건너뛰었습니다.", size=fs(12, scale)))
     else:
         icon = "✅" if report.get("compliance_pass") else "⚠️"
-        body.append(ft.Text(f"{icon} 컴플라이언스 검수 점수: {report.get('score', '-')}/100", weight=ft.FontWeight.BOLD, size=fs(13, scale)))
+        body.append(ft.Text(f"{icon} 컴플라이언스 검수 점수: {report.get('score') if report.get('score') is not None else '-'}/100", weight=ft.FontWeight.BOLD, size=fs(13, scale)))
         for strength in report.get("strengths") or []:
             body.append(ft.Text(f"👍 {strength}", size=fs(11, scale)))
         for hit in report.get("dictionary_hits") or []:
@@ -968,6 +1019,29 @@ def _build_report_controls(campaign: dict, scale: float) -> list[ft.Control]:
         else:
             body.append(ft.Text(f"✅ 과거 제목과 충분히 다릅니다 (최대 유사도 {variety.get('score', 0):.0%}).", size=fs(11, scale)))
 
+    length = report.get("length")
+    if length:
+        target = length.get("target")
+        target_text = f" · 목표 {target[0]:,}~{target[1]:,}자" if target else " · 짧은 공지라 분량 목표 없음"
+        icon = "📏" if not length.get("short") else "🔸"
+        body.append(ft.Text(
+            f"{icon} 본문 {length.get('chars', 0):,}자(공백 제외){target_text} · 평균 문장 {length.get('avg_sentence', 0)}자",
+            size=fs(11, scale),
+        ))
+
+    body_var = report.get("body_variety")
+    if body_var and body_var.get("checked"):
+        if body_var.get("similar_to"):
+            body.append(ft.Text(
+                f"📑 최근 글 「{body_var['similar_to']}」과 본문이 {body_var.get('score', 0):.0%} 겹칩니다.",
+                size=fs(11, scale),
+            ))
+        else:
+            body.append(ft.Text(
+                f"✅ 최근 글 {body_var.get('compared', 0)}편과 본문이 충분히 다릅니다 (최대 겹침 {body_var.get('score', 0):.0%}).",
+                size=fs(11, scale),
+            ))
+
     recommendation = report.get("recommendation")
     if recommendation:
         body.append(ft.Divider())
@@ -986,6 +1060,25 @@ def _build_report_controls(campaign: dict, scale: float) -> list[ft.Control]:
             ))
             for item in recommendation.get("intent_missing") or []:
                 body.append(ft.Text(f"　🔸 {item if isinstance(item, str) else str(item)}", size=fs(10, scale)))
+
+        if recommendation.get("too_short"):
+            target = recommendation.get("length_target") or [0, 0]
+            body.append(ft.Text(
+                f"🔸 본문이 {recommendation.get('length_chars') or 0:,}자로 목표({target[0]:,}~{target[1]:,}자)보다 "
+                "짧습니다. 제품을 잘 모르는 독자는 사진보다 설명을 읽습니다. 메모에 설명할 재료 — 무엇으로 "
+                "어떻게 만들었는지, 크기·구성, 어디에 쓰는지, 누구에게 맞는지, 손님 반응 — 를 더하거나 "
+                "🛍️ 제품·주문 정보를 채운 뒤 다시 생성하세요.",
+                size=fs(11, scale),
+            ))
+
+        if recommendation.get("body_similar_to"):
+            body.append(ft.Text(
+                f"📑 최근 글 「{recommendation['body_similar_to']}」과 본문이 "
+                f"{recommendation.get('body_similarity') or 0:.0%} 겹칩니다. 네이버는 같은 블로그의 비슷한 글을 "
+                "유사문서로 보고 노출을 낮출 수 있습니다. 메모에 이 제품만의 디테일(색감·손님 반응·"
+                "제작 뒷이야기 등)을 한 줄이라도 더한 뒤 다시 생성하세요 — 같은 메모로는 같은 글이 나옵니다.",
+                size=fs(11, scale),
+            ))
 
         for gap in recommendation.get("fact_gaps") or []:
             body.append(ft.Text(f"📋 입력했지만 본문에 안 들어간 항목 — {gap}", size=fs(11, scale)))

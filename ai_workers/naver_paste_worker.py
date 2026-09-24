@@ -1,5 +1,6 @@
-"""Subprocess entrypoint spawned by ai_workers.naver_publisher.trigger_naver_publish.
-Run as: python -m ai_workers.naver_paste_worker <campaign_id>
+"""Naver Smart Editor paste automation. The Flet publish screen calls `run()`
+on a background thread; it can also be run by hand for debugging:
+python -m ai_workers.naver_paste_worker <campaign_id>
 
 DOM automation against Naver's Smart Editor ONE, adapted from
 the prior cjc_blog_v2 project's paste_worker.py's draft-popup and strikethrough cleanup quirks.
@@ -25,10 +26,12 @@ from __future__ import annotations
 
 import html
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Callable, Optional
 
 # 이 워커는 detached subprocess로 별도 실행된다(naver_publisher.trigger_naver_publish가
 # `sys.executable -m ai_workers.naver_paste_worker`로 띄움) — flet_app/main.py의
@@ -43,7 +46,12 @@ for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
-from ai_workers.naver_publisher import NAVER_STATE_FILE, format_publish_error, launch_browser
+from ai_workers.naver_publisher import (
+    NAVER_STATE_FILE,
+    format_publish_error,
+    launch_browser,
+    split_publish_error,
+)
 from ai_workers.photo_placement import split_segments
 from core import repo, storage
 from core.clipboard_utils import copy_html_to_clipboard
@@ -412,7 +420,45 @@ def _log_visible_buttons(editor_frame, page, when: str) -> None:
             pass
 
 
-def run(campaign_id: str) -> None:
+# Campaigns with a publish run in progress (from the paste through the human
+# review window). The publish button can be clicked again while a run is
+# going, and the view is rebuilt on navigation, so the guard lives here.
+_IN_FLIGHT: set = set()
+_IN_FLIGHT_LOCK = threading.Lock()
+
+# The paste phase goes through the one OS clipboard. Two runs pasting at once
+# would interleave each other's paragraphs, so only the paste phase is
+# serialized — a second post can start pasting while the first one's window
+# is merely waiting for the marketer to review it.
+_PASTE_LOCK = threading.Lock()
+
+
+def is_running(campaign_id: str) -> bool:
+    with _IN_FLIGHT_LOCK:
+        return campaign_id in _IN_FLIGHT
+
+
+def run(campaign_id: str, on_status: Optional[Callable[[str], None]] = None) -> bool:
+    """Pastes one campaign into a fresh Smart Editor window and waits there
+    until the marketer closes it. Returns False without doing anything if a
+    run for this campaign is already in progress.
+
+    `on_status` receives short plain-Korean progress/outcome lines for the
+    publish screen (e.g. photos that could not be inserted automatically).
+    """
+    with _IN_FLIGHT_LOCK:
+        if campaign_id in _IN_FLIGHT:
+            return False
+        _IN_FLIGHT.add(campaign_id)
+    try:
+        _run(campaign_id, on_status or (lambda _msg: None))
+    finally:
+        with _IN_FLIGHT_LOCK:
+            _IN_FLIGHT.discard(campaign_id)
+    return True
+
+
+def _run(campaign_id: str, on_status: Callable[[str], None]) -> None:
     from playwright.sync_api import sync_playwright
 
     campaign = repo.get_campaign(campaign_id)
@@ -423,8 +469,13 @@ def run(campaign_id: str) -> None:
     brand_kit = repo.get_brand_kit()
     blog_id = (brand_kit.get("naver_blog_id") or "").strip()
     if not blog_id:
-        repo.update_campaign(campaign_id, publish_error="네이버 블로그 아이디가 없습니다. [브랜드 킷] 페이지에서 먼저 등록해주세요.")
+        message = "네이버 블로그 아이디가 없습니다. [브랜드 킷] 페이지에서 먼저 등록해주세요."
+        repo.update_campaign(campaign_id, publish_error=message)
+        on_status(f"❌ {message}")
         return
+
+    # A previous attempt's error must not linger next to a run that works.
+    repo.update_campaign(campaign_id, publish_error=None)
 
     title = (campaign.get("title") or "").strip() or "(제목 없음)"
     content = campaign.get("content") or ""
@@ -440,6 +491,7 @@ def run(campaign_id: str) -> None:
         target_url = f"https://blog.naver.com/{blog_id}?Redirect=Write"
 
         browser = None
+        paste_lock_held = False
         try:
             with sync_playwright() as p:
                 browser = launch_browser(p, headless=False)
@@ -460,10 +512,9 @@ def run(campaign_id: str) -> None:
                 _human_delay(1.0, 1.5)
 
                 if "nidlogin" in page.url:
-                    repo.update_campaign(
-                        campaign_id,
-                        publish_error="네이버 로그인이 풀렸습니다. [네이버 게시] 페이지에서 다시 로그인한 뒤 게시해주세요.",
-                    )
+                    message = "네이버 로그인이 풀렸습니다. [네이버 게시] 페이지에서 다시 로그인한 뒤 게시해주세요."
+                    repo.update_campaign(campaign_id, publish_error=message)
+                    on_status(f"❌ {message}")
                     browser.close()
                     return
 
@@ -471,6 +522,14 @@ def run(campaign_id: str) -> None:
                 _dismiss_draft_restore_popup(page, editor_frame)
 
                 modifier = "Meta" if sys.platform == "darwin" else "Control"
+
+                # Clipboard is shared with every other run — see _PASTE_LOCK.
+                if not _PASTE_LOCK.acquire(blocking=False):
+                    on_status("⏳ 다른 글을 붙여넣는 중이라, 끝나면 이어서 붙여넣습니다…")
+                    _PASTE_LOCK.acquire()
+                paste_lock_held = True
+                failed_photos: list = []
+                title_ok = True
 
                 # --- Body: clear first, before touching the title ---
                 # This used to run *after* typing the title. Live testing
@@ -545,10 +604,12 @@ def run(campaign_id: str) -> None:
                         local_path = local_by_tag.get(value)
                         if local_path is None:
                             print(f"[naver_paste_worker] no local file for image '{value}' — skipping")
+                            failed_photos.append(value)
                             continue
                         uploaded = _upload_photo_at_cursor(page, editor_frame, local_path)
                         if not uploaded:
                             print(f"[naver_paste_worker] photo upload failed for '{value}'")
+                            failed_photos.append(value)
                         _human_delay(1.5, 2.0)
 
                 # 제목이 비어 보이면 다시 채운다 — 위에서 본문보다 먼저 채우도록
@@ -579,6 +640,17 @@ def run(campaign_id: str) -> None:
                         page.keyboard.press("Backspace")
                         page.keyboard.type(title, delay=15)
                         _human_delay(0.4, 0.6)
+                        # Re-found for the same staleness reason as above.
+                        check_el = _query_selector_retry(editor_frame, title_selectors, timeout_s=2.0)
+                        try:
+                            title_ok = bool(check_el and (check_el.inner_text() or "").strip())
+                        except Exception:  # noqa: BLE001
+                            title_ok = False
+                    elif not fresh_title_el:
+                        title_ok = False
+
+                _PASTE_LOCK.release()
+                paste_lock_held = False
 
                 # 여기서 status="published"로 바꾸지 않는다 — 이 자동화는 제목·
                 # 본문·사진을 붙여넣기만 할 뿐, 네이버의 진짜 [발행] 버튼은
@@ -595,18 +667,47 @@ def run(campaign_id: str) -> None:
                 print("[naver_paste_worker] paste complete — waiting for admin to review, click 발행 in Naver, "
                       "then click [✅ 수동으로 완료] in the app")
 
-                # Keep the browser open so the admin can review/publish by hand.
-                for _ in range(300):
+                # Anything the automation couldn't do is recorded where the
+                # publish screen shows errors *and* reported right away —
+                # photos used to fail with only a console line, so a post
+                # could go out missing pictures nobody knew were missing.
+                warnings = []
+                if failed_photos:
+                    warnings.append(
+                        f"사진 {len(failed_photos)}장을 자동으로 넣지 못했습니다. "
+                        "Chrome 창에서 직접 추가한 뒤 발행해주세요: "
+                        + ", ".join(Path(v).name for v in failed_photos)
+                    )
+                if not title_ok:
+                    warnings.append("제목을 자동으로 입력하지 못했습니다. Chrome 창에서 제목을 직접 확인해주세요.")
+                if warnings:
+                    repo.update_campaign(campaign_id, publish_error="⚠️ " + " / ".join(warnings))
+                    on_status("⚠️ 붙여넣기는 끝났지만 확인이 필요합니다 — " + " / ".join(warnings))
+                else:
+                    on_status(
+                        "✅ 붙여넣기 완료 — Chrome 창에서 내용을 확인하고 네이버 [발행]을 누른 뒤, "
+                        "여기서 [✅ 수동으로 완료]를 눌러주세요. 창은 직접 닫을 때까지 열려 있습니다."
+                    )
+
+                # Keep the browser open until the marketer closes it. This
+                # used to give up after 5 minutes and close the window itself
+                # — taking an unpublished, possibly half-reviewed post with it
+                # if the review took longer than that.
+                while True:
                     try:
-                        if page.is_closed() or len(context.pages) == 0:
+                        if page.is_closed() or not browser.is_connected() or len(context.pages) == 0:
                             break
                     except Exception:
                         break
                     time.sleep(1)
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
-            repo.update_campaign(campaign_id, publish_error=format_publish_error(exc))
+            message = format_publish_error(exc)
+            repo.update_campaign(campaign_id, publish_error=message)
+            on_status(f"❌ {split_publish_error(message)[0]}")
         finally:
+            if paste_lock_held:
+                _PASTE_LOCK.release()
             try:
                 if browser is not None:
                     browser.close()

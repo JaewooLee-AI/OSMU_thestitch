@@ -659,7 +659,7 @@ header_bar(s, "PART 3 · 커스터마이징", "무엇이 바뀌나 — 필수 3�
 must = [
     ("① 브랜드 정체성·목소리·SEO", "회사명·페르소나·핵심 팩트·용어집·SEO 키워드 — core/brand_seed.py", PRIMARY),
     ("② 컴플라이언스 기준", "업종에 맞는 표시·광고 법 조항으로 검수 기준 교체 — ai_workers/guardrail.py", SECONDARY),
-    ("③ 브랜드 컬러", "두 파일을 함께 — core/brand_seed.py + assets/custom.css", ACCENT),
+    ("③ 브랜드 컬러", "core/brand_seed.py 의 BRAND_COLORS 한 곳", ACCENT),
 ]
 x = Inches(0.55)
 for title, desc, color in must:

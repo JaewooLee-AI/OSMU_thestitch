@@ -106,43 +106,13 @@ def exists(rel_path: str) -> bool:
 def sha256_of(rel_path: str) -> Optional[str]:
     """Prefers the hash recorded at upload time; falls back to hashing the
     file (e.g. for assets copied into data/assets by hand)."""
-    with_row = repo.list_assets(limit=10000)
-    for row in with_row:
-        if row["rel_path"] == rel_path and row.get("sha256"):
-            return row["sha256"]
+    row = repo.find_asset_by_rel_path(rel_path)
+    if row and row.get("sha256"):
+        return row["sha256"]
     try:
         return _sha256(read_bytes(rel_path))
     except OSError:
         return None
-
-
-def data_uri(rel_path: str, max_edge: int = 720) -> str:
-    """Inline base64 `data:` URI for the channel simulators.
-
-    Streamlit's `components.html` renders inside a sandboxed iframe that
-    cannot reach Streamlit's own static file routes, so simulator previews
-    have to carry their pixels inline. Downscaled first to keep the injected
-    HTML small enough for the browser to parse comfortably.
-    """
-    import base64
-
-    try:
-        img = Image.open(io.BytesIO(read_bytes(rel_path)))
-        img = ImageOps.exif_transpose(img)
-        if img.mode != "RGB":
-            img = img.convert("RGB")
-        img.thumbnail((max_edge, max_edge), Image.LANCZOS)
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=78)
-        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:image/jpeg;base64,{encoded}"
-    except Exception:
-        # A 1x1 transparent GIF keeps the simulator layout intact when a
-        # referenced file is missing, instead of rendering a broken-image icon.
-        return (
-            "data:image/gif;base64,"
-            "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
-        )
 
 
 def storage_usage() -> Tuple[int, int]:

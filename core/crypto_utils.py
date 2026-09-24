@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import os
 import stat
+import threading
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -28,6 +29,9 @@ from core.db import DATA_DIR
 NONCE_SIZE = 12
 TAG_SIZE = 16
 _KEY_FILE = DATA_DIR / ".master_key"
+# Two threads encrypting at first use must not each generate (and one
+# overwrite) a key.
+_KEY_LOCK = threading.Lock()
 
 
 def _load_master_key() -> bytes:
@@ -38,14 +42,38 @@ def _load_master_key() -> bytes:
             raise RuntimeError("ENCRYPTION_MASTER_KEY_BASE64 must decode to exactly 32 bytes.")
         return key
 
-    if _KEY_FILE.exists():
-        return base64.b64decode(_KEY_FILE.read_text().strip())
+    with _KEY_LOCK:
+        if _KEY_FILE.exists():
+            return base64.b64decode(_KEY_FILE.read_text().strip())
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    key = os.urandom(32)
-    _KEY_FILE.write_text(base64.b64encode(key).decode("ascii"))
-    os.chmod(_KEY_FILE, stat.S_IRUSR | stat.S_IWUSR)  # 0600 — owner only
-    return key
+        # Generating a key is only safe when nothing was encrypted with a
+        # previous one. If secrets already exist, the real key is somewhere
+        # else (an .env that wasn't loaded, a deleted/moved key file) — a new
+        # key would make every stored API key permanently undecryptable while
+        # looking like a plain "wrong key" error later. Stop here instead.
+        if _has_encrypted_secrets():
+            raise RuntimeError(
+                "API 키 암호화 마스터 키를 찾을 수 없습니다. 저장된 키가 이미 있으므로 새 마스터 키를 "
+                "만들지 않았습니다. .env의 ENCRYPTION_MASTER_KEY_BASE64 또는 "
+                f"{_KEY_FILE} 파일을 복구하세요. 복구할 수 없다면 ⚙️ 설정에서 저장된 키(LLM·네이버)를 "
+                "모두 삭제한 뒤 다시 등록하세요."
+            )
+
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        key = os.urandom(32)
+        _KEY_FILE.write_text(base64.b64encode(key).decode("ascii"))
+        os.chmod(_KEY_FILE, stat.S_IRUSR | stat.S_IWUSR)  # 0600 — owner only
+        return key
+
+
+def _has_encrypted_secrets() -> bool:
+    from core.db import get_conn
+
+    with get_conn() as conn:
+        for table in ("llm_settings", "naver_api_settings", "searchad_settings"):
+            if conn.execute(f"select 1 from {table} limit 1").fetchone():
+                return True
+    return False
 
 
 def encrypt_api_key(plaintext: str) -> str:

@@ -8,11 +8,12 @@ machine, since Naver's login flow (passkey/OTP) and the marketer's final
    expires) admin action. Opens a real Chrome window, waits for login, and
    saves the session cookies to a local file. Blocking by design — the admin
    is sitting there watching it happen.
-2. `trigger_naver_publish(campaign_id)` — spawns a detached subprocess
-   (naver_paste_worker.py) so the Streamlit rerun returns immediately while a
-   separate Chrome window opens, pastes title/body/photos into Smart Editor
-   ONE using the saved session, and leaves the browser open for the admin to
-   review and click [발행] themselves — the "semi" in semi-automatic.
+2. `naver_paste_worker.run(campaign_id)` — run on a background thread by the
+   publish screen: a separate Chrome window opens, title/body/photos are
+   pasted into Smart Editor ONE using the saved session, and the browser is
+   left open for the admin to review and click [발행] themselves — the "semi"
+   in semi-automatic. (It used to be a detached subprocess; a packaged Flet
+   exe has no python.exe to spawn, so it now runs in-process.)
 
 Naver session cookies deliberately never enter the database, not even this
 local one: they're the one credential here that grants access to a live
@@ -20,9 +21,7 @@ publishing account, so they stay in a single file that's easy to delete.
 """
 from __future__ import annotations
 
-import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Any, Dict
@@ -95,7 +94,11 @@ def launch_browser(p, headless: bool = False):
     """Prefers the system-installed Chrome (more convincing to Naver's bot
     detection than bundled Chromium) with automation-tell flags stripped."""
     args = ["--disable-blink-features=AutomationControlled", "--no-first-run", "--no-default-browser-check"]
-    if not sys.platform.startswith("darwin"):
+    # Container-only flags, and only on Linux. On a Windows/macOS desktop
+    # `--no-sandbox` just disables Chrome's sandbox for a window browsing the
+    # live web — and makes Chrome show an "unsupported command-line flag"
+    # warning bar, which is itself an automation tell.
+    if sys.platform.startswith("linux"):
         args += ["--no-sandbox", "--disable-dev-shm-usage"]
 
     chrome_app_mac = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
@@ -154,35 +157,3 @@ def open_naver_login_session(blog_id: str = "") -> Dict[str, Any]:
 
     clear_naver_session()
     return {"success": False, "message": "⚠️ 로그인이 완료되지 않은 상태에서 창이 닫혔습니다. 다시 시도해주세요."}
-
-
-def trigger_naver_publish(campaign_id: str) -> Dict[str, Any]:
-    """Non-blocking — hands off to naver_paste_worker.py as a detached
-    subprocess and returns immediately, so Streamlit isn't held for the
-    minute-plus the browser automation takes."""
-    if not naver_session_exists():
-        return {"success": False, "message": "네이버 로그인 세션이 없습니다. 먼저 로그인 세션을 저장하세요."}
-
-    try:
-        subprocess.Popen(
-            [sys.executable, "-m", "ai_workers.naver_paste_worker", campaign_id],
-            cwd=str(PROJECT_ROOT),
-        )
-    except Exception as exc:  # noqa: BLE001
-        # Flet build windows로 패키징된 exe(임베디드 Python 런타임)에서는
-        # sys.executable이 새로 띄울 수 있는 진짜 python.exe 경로가 아니라서
-        # 이 Popen 호출 자체가 실패한다 — 라이브에서 확인된 에러는
-        # "PathAccessException: Cannot create file, path =
-        # 'ai_workers.naver_paste_worker' ..." 로, -m 뒤의 모듈 이름을
-        # 파일 경로로 잘못 다루려는 임베디드 런타임 쪽 증상이었다. 별도
-        # 프로세스를 못 띄우는 이 환경에서는 같은 프로세스 안 백그라운드
-        # 스레드로 대신 돌린다 — 개발용 python 실행(별도 프로세스 성공)에서는
-        # 이 분기를 타지 않는다.
-        print(f"[naver_publisher] subprocess launch failed ({exc}); falling back to an in-process thread")
-        from ai_workers import naver_paste_worker
-        threading.Thread(target=naver_paste_worker.run, args=(campaign_id,), daemon=True).start()
-
-    return {
-        "success": True,
-        "message": "게시 작업을 시작했습니다. 잠시 후 Chrome 창이 열리면 내용을 확인하고 [발행] 버튼을 직접 눌러주세요.",
-    }

@@ -1,17 +1,9 @@
-"""Flet desktop entry point for the OSMU workbench.
+"""Flet desktop entry point for the OSMU workbench — the app's only UI.
 
-Runs alongside app.py (Streamlit) during the migration — both read/write the
-same core.db SQLite file (core/db.py's DATA_DIR fallback keeps an existing
-Streamlit install's data/ untouched) and neither depends on the other. Only
-the UI layer is being rewritten here; core/, ai_workers/, simulators/ are
-untouched and imported exactly as the Streamlit app imports them.
-
-Real screens so far: 🧵 브랜드 킷, ⚙️ 설정 · 토큰 (LLM 벤더/이미지 분석/사용량 탭만 —
-네이버 API 탭의 키워드 갱신 마법사는 별도 작업). See
-/Users/jwlee/.claude/plans/vectorized-sparking-panda.md for the rest of the
-view-by-view migration plan. The remaining destinations show a placeholder
-so the navigation shell itself can be exercised end to end before every
-screen exists.
+core/ (data, storage, crypto), ai_workers/ (LLM pipeline, Naver automation)
+and flet_app/ (views, simulators) are the whole application. Every view's
+`build(page, state)` rebuilds its screen from `core.repo` each time it is
+selected in the navigation rail.
 """
 from __future__ import annotations
 
@@ -40,8 +32,18 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# .env must be loaded *before* core is imported: core.db resolves
+# OSMU_DATA_DIR at import time, and core.crypto_utils reads
+# ENCRYPTION_MASTER_KEY_BASE64. Without this, a master key moved into .env
+# (as HANDOFF.md recommends) was invisible to this app, which then generated a
+# fresh key and could no longer decrypt any stored API key.
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv()  # CWD .env too, for `flet run` from elsewhere; never overrides the above
+
 from core import repo  # noqa: E402
-from core.brand_seed import seed_if_empty  # noqa: E402
+from core.brand_seed import apply_seed_fixes, seed_if_empty  # noqa: E402
 from core.db import init_db  # noqa: E402
 
 from flet_app.state import FONT_SCALE_STATE_KEY, AppState  # noqa: E402
@@ -82,7 +84,13 @@ def _placeholder(label: str) -> ft.Control:
 
 def main(page: ft.Page) -> None:
     init_db()
+    # Generation runs in this process, so anything still 'processing' at
+    # startup was cut off when the app last closed — see the repo docstring.
+    interrupted = repo.recover_interrupted_processing()
+    if interrupted:
+        print(f"[main] {interrupted}개 콘텐츠가 이전 실행에서 생성 도중 중단되어 '실패'로 표시했습니다.")
     seeded = seed_if_empty()
+    apply_seed_fixes()  # see core/brand_seed.SEED_FIXES
 
     saved_scale = (repo.get_app_state(FONT_SCALE_STATE_KEY) or {}).get("value")
     state = AppState(font_scale=float(saved_scale) if saved_scale else DEFAULT_FONT_SCALE)

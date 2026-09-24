@@ -1,22 +1,17 @@
-"""Flet port of views/05_naver_publish.py — 네이버 블로그 반자동 게시.
+"""네이버 블로그 반자동 게시.
 
 네이버가 봇의 Smart Editor ONE 게시를 적극적으로 막기 때문에 이 화면은
 "반"자동이다 — 저장된 로그인 세션으로 실제 Chrome 창을 열어 제목·본문·사진을
 순서대로 붙여넣어주고, 담당자가 직접 [발행]을 눌러야 한다. `발행` 팝업의 태그
 칸은 자동화가 아예 닿지 않아, 여기서 태그를 보여주고 복사만 시킨다.
 
-`open_naver_login_session()`과 게시 둘 다 최대 몇 분까지 블로킹되는 호출이라
+`open_naver_login_session()`과 게시 둘 다 몇 분 이상 블로킹되는 호출이라
 워크벤치의 초안 생성과 같은 이유로 `page.run_thread()`로 돌린다 — 그러지
-않으면 그 창이 열려 있는 동안 앱 전체가 멈춘 것처럼 보인다. 게시는 원래
-`ai_workers.naver_publisher.trigger_naver_publish()`(Streamlit용, detached
-subprocess로 naver_paste_worker.py를 띄움)를 썼는데, 패키징된 Flet exe(내장
-Python 런타임이라 새로 실행할 python.exe가 없음)에서 subprocess 실행 자체가
-"PathAccessException: Cannot create file, path =
-'ai_workers.naver_paste_worker' ..."로 실패하는 게 라이브로 확인됐다 —
-subprocess.Popen을 try/except로 감싸 스레드로 우회를 시도해도 같은 에러가
-재현되어, 이 환경에서는 그 실패가 평범한 Python 예외로 잡히지 않는 것으로
-보인다. 그래서 이 화면은 trigger_naver_publish()를 거치지 않고
-`naver_paste_worker.run()`을 여기서 직접 page.run_thread로 부른다.
+않으면 그 창이 열려 있는 동안 앱 전체가 멈춘 것처럼 보인다. 게시는
+`naver_paste_worker.run()`을 같은 프로세스 안 스레드에서 직접 부른다(패키징된
+Flet exe에는 subprocess로 띄울 python.exe가 없다). run()은 담당자가 게시 창을
+닫을 때까지 돌아오지 않고, 같은 글을 두 번 게시하려는 클릭은 run() 쪽에서
+거른다.
 """
 from __future__ import annotations
 
@@ -159,41 +154,55 @@ def _build_card(
             ], spacing=8)
 
         def on_publish(e: ft.Event) -> None:
-            # naver_publisher.trigger_naver_publish()는 원래 Streamlit용으로
-            # naver_paste_worker.py를 별도 python.exe 프로세스로 띄운다 —
-            # flet build windows로 패키징된 exe(내장 Python 런타임이라
-            # 새로 실행할 python.exe가 없음)에서는 이게 라이브로
-            # "PathAccessException: Cannot create file, path =
-            # 'ai_workers.naver_paste_worker' ..."로 실패하는 게 재확인됐다.
-            # trigger_naver_publish() 안에서 subprocess.Popen을 try/except로
-            # 감싸 스레드로 우회하는 방법도 시도했지만 같은 에러가 그대로
-            # 재현됐다 — 이 환경에서는 그 실패 자체가 평범한 Python
-            # 예외로 잡히지 않는 것으로 보인다. 그래서 Flet 쪽은 아예
-            # subprocess를 거치지 않고, 이미 검증된 방식(네이버 로그인과
-            # 동일하게 page.run_thread로 같은 프로세스 안 백그라운드
-            # 스레드)으로 naver_paste_worker.run()을 직접 부른다.
             if not naver_session_exists():
                 publish_status.value = "네이버 로그인 세션이 없습니다. 먼저 로그인 세션을 저장하세요."
                 publish_status.color = "#B3261E"
                 publish_status.update()
                 return
+            if naver_paste_worker.is_running(campaign_id):
+                return  # 두 번째 클릭 — 같은 글이 이미 게시 창에 붙여넣어지는 중
 
+            publish_button.disabled = True
+            publish_button.update()
             publish_status.value = "게시 작업을 시작했습니다. 잠시 후 Chrome 창이 열리면 내용을 확인하고 [발행] 버튼을 직접 눌러주세요."
             publish_status.color = "#1B6E3C"
             publish_status.update()
 
+            def on_status(msg: str) -> None:
+                publish_status.value = msg
+                publish_status.color = "#B3261E" if msg.startswith(("❌", "⚠️")) else "#1B6E3C"
+                try:
+                    publish_status.update()
+                except Exception:  # noqa: BLE001 — 화면이 이미 다시 그려졌으면 무시
+                    pass
+
             def _work() -> None:
-                naver_paste_worker.run(campaign_id)
+                # run()이 게시 창이 닫힐 때까지 돌아오지 않으므로, 그동안 버튼은
+                # 꺼진 채로 둔다. 예외는 run() 안에서 publish_error로 기록되지만
+                # 그 밖에서 터져도 버튼이 영원히 꺼져 있지 않도록 finally로 복구.
+                try:
+                    naver_paste_worker.run(campaign_id, on_status=on_status)
+                except Exception as exc:  # noqa: BLE001
+                    on_status(f"❌ 게시 실패: {exc}")
+                finally:
+                    publish_button.disabled = False
+                    try:
+                        publish_button.update()
+                    except Exception:  # noqa: BLE001
+                        pass
 
             page.run_thread(_work)
 
-        buttons: list[ft.Control] = [
-            ft.FilledButton(
-                publish_label, on_click=on_publish, expand=True,
-                disabled=not naver_session_exists(),
-                tooltip=None if naver_session_exists() else "먼저 네이버에 로그인해주세요.",
-            ),
-        ]
+        running = naver_paste_worker.is_running(campaign_id)
+        if running:
+            publish_status.value = "⏳ 이 글의 게시 창이 열려 있습니다. Chrome 창에서 확인 후 [발행]을 눌러주세요."
+            publish_status.color = "#1B6E3C"
+        publish_button = ft.FilledButton(
+            publish_label, on_click=on_publish, expand=True,
+            disabled=running or not naver_session_exists(),
+            tooltip=None if naver_session_exists() else "먼저 네이버에 로그인해주세요.",
+        )
+        buttons: list[ft.Control] = [publish_button]
         if allow_manual_complete:
             def on_manual(e: ft.Event) -> None:
                 repo.update_campaign(campaign_id, status="published", publish_error=None)
@@ -428,9 +437,9 @@ def build(page: ft.Page, state: AppState) -> ft.Control:
     initial_fingerprint = _fingerprint(pending) + _fingerprint(published)
 
     def _poll_for_publish_completion(last: tuple) -> None:
-        # [지금 게시]는 detached subprocess(naver_paste_worker.py)를 띄우고
-        # 바로 반환한다 — 그 프로세스가 끝나면서 campaign 상태를 published로
-        # (또는 실패 시 publish_error를) 바꿔도 이 화면과는 SQLite 말고는
+        # [지금 게시]는 백그라운드 스레드(naver_paste_worker.run)를 띄우고
+        # 바로 반환한다 — 그 스레드가 publish_error(사진 누락 경고 등)를
+        # 기록해도 이 화면과는 SQLite 말고는
         # 아무 연결이 없어서, 예전엔 사용자가 직접 다른 메뉴에 갔다 와야만
         # (=화면이 통째로 다시 그려져야만) 게시 대기 개수가 바뀌었다. 이 화면이
         # 떠 있는 동안은 대신 몇 초마다 스스로 다시 읽어서 바뀐 게 있으면

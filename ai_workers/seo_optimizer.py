@@ -392,9 +392,31 @@ def rebalance_keywords(
 
     prompt = f"[본문]\n{content}\n\n[조정 필요 사항]\n" + "\n".join(issue_desc)
     try:
-        raw = generate_text(vendor=vendor, prompt=prompt, system=REBALANCE_SYSTEM_PROMPT, max_tokens=2500, note="seo-rebalance")
+        # The whole body comes back, so the ceiling scales with it (~1 token
+        # per Korean character with spaces, plus headroom) instead of a
+        # fixed 2500 that a 2,000자 post would overrun.
+        raw = generate_text(
+            vendor=vendor, prompt=prompt, system=REBALANCE_SYSTEM_PROMPT,
+            max_tokens=max(2500, int(len(content) * 1.2) + 500), note="seo-rebalance",
+        )
     except Exception:
-        return content, report  # rebalance is best-effort; never block the pipeline
+        # Best-effort; never block the pipeline. This includes a response
+        # cut off at the output ceiling (multi_llm_router raises for that) —
+        # a truncated post must never replace the full one.
+        return content, report
 
     new_content = raw.strip() or content
+    # The pass only moves keywords around; it has no reason to lose a
+    # meaningful share of the post. A result this much shorter is a model
+    # that summarised or stopped early without saying so — keep the original.
+    if len(new_content) < len(content) * REBALANCE_MIN_LENGTH_RATIO:
+        print(
+            f"[seo_optimizer] rebalance shrank the body {len(content)}→{len(new_content)} chars — "
+            "keeping the original"
+        )
+        return content, report
     return new_content, check_keyword_density(title, new_content, keywords, minimum, maximum)
+
+
+# See the length check at the end of rebalance_keywords.
+REBALANCE_MIN_LENGTH_RATIO = 0.85

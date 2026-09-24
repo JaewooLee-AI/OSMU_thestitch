@@ -9,7 +9,7 @@ from __future__ import annotations
 import flet as ft
 
 from core import storage
-from simulators.base import all_images
+from flet_app.simulators.base import all_images
 
 TRUNCATE_LENGTH = 125
 MAX_CAROUSEL = 10

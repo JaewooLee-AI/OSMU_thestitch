@@ -1,4 +1,4 @@
-"""Flet port of views/01_dashboard.py — 파이프라인 대시보드.
+"""파이프라인 대시보드.
 
 원본의 `core/theme.py` HTML(`stat_card`/`status_chip`)이 아니라, 브랜드 킷
 화면부터 써온 `flet_app/theme.py`의 네이티브 버전을 그대로 재사용한다.

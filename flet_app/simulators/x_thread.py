@@ -1,9 +1,8 @@
 """X(트위터) 타래 시뮬레이터 — Flet 네이티브.
 
-문자열 분할 알고리즘(`_split_tweet`)은 프레임워크와 무관한 순수 로직이라
-원본 `simulators/x_thread.py`에서 그대로 가져다 쓴다 — 여기서 새로 짜는 건
-그 결과를 HTML 대신 네이티브 컨트롤로 그리는 부분뿐이다. 미디어 그리드(1~4장의
-4가지 배치)도 원본과 동일한 레이아웃 규칙을 따른다.
+문자열 분할 알고리즘(`split_tweet`)은 프레임워크와 무관한 순수 로직이라
+`flet_app/simulators/base.py`에 둔다. 여기서는 그 결과를 네이티브 컨트롤로 그리는
+부분만 맡는다. 미디어 그리드는 1~4장의 4가지 배치 규칙을 따른다.
 """
 from __future__ import annotations
 
@@ -12,9 +11,7 @@ from typing import List
 import flet as ft
 
 from core import storage
-from simulators.base import all_images
-from simulators.x_thread import MAX_MEDIA, TWEET_LIMIT, _split_tweet  # noqa: F401 (재사용)
-
+from flet_app.simulators.base import MAX_MEDIA, all_images, split_tweet
 from flet_app.theme import BRAND_COLORS
 
 MEDIA_WIDTH = 552
@@ -68,7 +65,7 @@ def render(campaign: dict, display_name: str = "브랜드", handle: str = "@hand
 
     chunks: List[str] = []
     for tweet in tweets:
-        chunks.extend(_split_tweet(tweet))
+        chunks.extend(split_tweet(tweet))
 
     if not chunks:
         return ft.Container(

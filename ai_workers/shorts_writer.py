@@ -10,7 +10,7 @@ Shorts writing is not "the blog post, shorter". It's a shot list with on-
 screen text, where the constraint is that the right-hand button cluster and
 the bottom caption bar of the player eat roughly the outer 25% of the frame —
 so any text that carries meaning has to sit in the middle band. The simulator
-(simulators/shorts.py) draws those dead zones; this writer is told about them
+(flet_app/simulators/shorts.py) draws those dead zones; this writer is told about them
 so the copy is short enough to survive them.
 """
 from __future__ import annotations

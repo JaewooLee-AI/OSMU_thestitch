@@ -127,6 +127,25 @@ def save_brand_kit(**fields) -> None:
         )
 
 
+def append_tone_rule(rule: str) -> bool:
+    """Adds `rule` as a new "- " bullet at the end of the tone guide.
+
+    Returns False (and changes nothing) if the guide already contains it.
+    Backs the workbench's "이 요청을 브랜드 킷에 저장" button: a revision
+    request applies to one post only, and marketers were retyping the same
+    style request ("문장은 짧게") on every draft.
+    """
+    rule = " ".join((rule or "").split()).lstrip("-• ").strip()
+    if not rule:
+        return False
+    current = (get_brand_kit().get("tone_and_manner") or "").rstrip()
+    if rule in current:
+        return False
+    updated = f"{current}\n- {rule}" if current else f"- {rule}"
+    save_brand_kit(tone_and_manner=updated)
+    return True
+
+
 # --- campaigns --------------------------------------------------------------
 
 def list_campaigns(source_type: Optional[str] = None, statuses: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -150,6 +169,23 @@ def get_campaign(campaign_id: str) -> Optional[Dict[str, Any]]:
     with get_conn() as conn:
         row = conn.execute("select * from campaigns where id = ?", (campaign_id,)).fetchone()
     return _decode(row, _CAMPAIGN_JSON_COLS, _CAMPAIGN_BOOL_COLS)
+
+
+def recent_posts(exclude_id: Optional[str] = None, limit: int = 10) -> List[Dict[str, Any]]:
+    """Title + body of the most recently touched campaigns that have a body,
+    newest first — the history ai_workers/body_variety.py compares against.
+    Excludes the campaign being generated, which would match itself."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            select id, title, content from campaigns
+            where content is not null and trim(content) != '' and id != ?
+              and status != 'processing'
+            order by updated_at desc limit ?
+            """,
+            (exclude_id or "", limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def list_known_source_urls() -> set:
@@ -190,6 +226,49 @@ def update_campaign(campaign_id: str, **fields) -> None:
             f"update campaigns set {assignments}, updated_at = datetime('now') where id = ?",
             tuple(encoded.values()) + (campaign_id,),
         )
+
+
+class CampaignBusyError(RuntimeError):
+    """Another generation/revision is already running for this campaign."""
+
+
+def begin_processing(campaign_id: str) -> str:
+    """Atomically flips a campaign to 'processing' and returns its previous
+    status. Raises CampaignBusyError if it is already processing.
+
+    The workbench view is rebuilt from scratch on every navigation, so its
+    own "button disabled while running" state doesn't survive leaving the
+    screen and coming back — without this check the same campaign could be
+    generated twice at once, each run overwriting the other's result.
+    `begin immediate` takes the write lock before reading, so two threads
+    can't both see a non-processing status.
+    """
+    with get_conn() as conn:
+        conn.execute("begin immediate")
+        row = conn.execute("select status from campaigns where id = ?", (campaign_id,)).fetchone()
+        if row is None:
+            raise RuntimeError(f"campaign {campaign_id} not found")
+        if row["status"] == "processing":
+            raise CampaignBusyError("이 콘텐츠는 이미 생성·수정 작업이 진행 중입니다. 끝날 때까지 기다려주세요.")
+        conn.execute(
+            "update campaigns set status = 'processing', publish_error = null, "
+            "updated_at = datetime('now') where id = ?",
+            (campaign_id,),
+        )
+        return row["status"]
+
+
+def recover_interrupted_processing() -> int:
+    """Marks campaigns left in 'processing' by a previous app session as
+    failed. Generation runs in-process, so at startup nothing can still be
+    working on them — without this they would stay 'processing' forever and
+    begin_processing would refuse to ever run them again."""
+    with get_conn() as conn:
+        return conn.execute(
+            "update campaigns set status = 'failed', publish_error = ?, updated_at = datetime('now') "
+            "where status = 'processing'",
+            ("앱이 생성 도중 종료되어 작업이 중단되었습니다. 다시 생성해주세요.",),
+        ).rowcount
 
 
 def delete_campaign(campaign_id: str) -> None:
@@ -291,6 +370,13 @@ def list_assets(limit: int = 200) -> List[Dict[str, Any]]:
             "select * from assets order by created_at desc limit ?", (limit,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def find_asset_by_rel_path(rel_path: str) -> Optional[Dict[str, Any]]:
+    # rel_path is UNIQUE (core/db.py), so this is an index lookup.
+    with get_conn() as conn:
+        row = conn.execute("select * from assets where rel_path = ?", (rel_path,)).fetchone()
+    return dict(row) if row else None
 
 
 def find_asset_by_sha256(sha256: str) -> Optional[Dict[str, Any]]:

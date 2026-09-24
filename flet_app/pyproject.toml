@@ -1,7 +1,7 @@
 [project]
 name = "osmu-thestitch-flet"
 version = "0.1.0"
-description = "더스티치 OSMU 워크벤치 — Flet 데스크톱 버전 (Streamlit 버전과 병행 개발 중)"
+description = "더스티치 OSMU 워크벤치 — Flet 데스크톱 앱"
 requires-python = ">=3.10"
 dependencies = [
     "flet>=1.0.0",

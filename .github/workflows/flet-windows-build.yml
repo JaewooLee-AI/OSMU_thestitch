@@ -3,14 +3,12 @@ name: flet-windows-build
 # OSMU_thestitch Flet 데스크톱 앱의 Windows용 .exe를 빌드한다.
 #
 # flet_app/main.py는 sys.path.insert(0, PROJECT_ROOT)로 자기 부모 디렉터리를
-# 경로에 넣어 core/, ai_workers/, 최상위 simulators/(HTML 생성용 — flet_app/simulators/
-# 와는 다른 별개 패키지)를 그대로 import한다. `flet build`는 지정한 앱 경로
-# "안"의 파일만 패키징하므로, flet_app/만 놓고 빌드하면 그 바깥의 세 패키지가
+# 경로에 넣어 core/, ai_workers/를 그대로 import한다. `flet build`는 지정한 앱 경로
+# "안"의 파일만 패키징하므로, flet_app/만 놓고 빌드하면 그 바깥의 두 패키지가
 # 통째로 빠져 실행 즉시 ImportError가 난다. 그래서 빌드 직전에 오늘의 저장소
-# 구조를 그대로 복제한 stage/ 디렉터리(core/, ai_workers/, simulators/, flet_app/를
-# 형제로 나란히)를 만든다. 이름 충돌은 없다 — flet_app/simulators/는 flet_app
-# 복사본 안에 그대로 얹혀가고, 최상위 simulators/는 그 옆의 형제 폴더로 별도
-# 위치한다.
+# 구조를 그대로 복제한 stage/ 디렉터리(core/, ai_workers/, flet_app/를 형제로
+# 나란히)를 만든다. (Streamlit 시절의 최상위 simulators/ 패키지는 삭제됐다 —
+# 시뮬레이터는 이제 flet_app/simulators/ 하나뿐이다.)
 #
 # `flet build`는 앱 경로 "루트"에 진입 스크립트가 직접 있어야 한다(--module-name은
 # 하위 디렉터리를 가리키는 점(.) 표기를 지원하지 않는다 — 첫 시도에서
@@ -18,7 +16,7 @@ name: flet-windows-build
 # stage/main.py로도 복사해 루트에 둔다. 그 파일의 sys.path.insert(parent.parent)
 # 계산은 이 위치에서는 안 맞는 경로를 가리키지만 해가 되지는 않는다 — Python이
 # 실행 스크립트의 디렉터리(stage/)를 기본으로 sys.path에 넣어주므로 core/,
-# ai_workers/, simulators/, flet_app/이 어차피 stage/의 형제로 이미 올바르게
+# ai_workers/, flet_app/이 어차피 stage/의 형제로 이미 올바르게
 # 잡힌다. 소스 코드는 손대지 않는다: git의 flet_app/main.py는 그대로 두고,
 # 빌드 스테이징 단계에서만 복사본을 하나 더 둔다.
 
@@ -28,7 +26,6 @@ on:
       - "flet_app/**"
       - "core/**"
       - "ai_workers/**"
-      - "simulators/**"
       - ".github/workflows/flet-windows-build.yml"
   workflow_dispatch:
 
@@ -64,7 +61,7 @@ jobs:
         run: playwright install chromium
 
       - name: Diagnostic - does ai_workers.naver_publisher.launch_browser() work here?
-        # 지인 PC(Chrome 이미 설치됨, Streamlit으로 실전 사용 중)에서 네이버
+        # 지인 PC(Chrome 이미 설치됨, 실전 사용 중)에서 네이버
         # 로그인 버튼을 눌러도 반응이 없었다는 제보 때문에 추가한 스텝이다.
         # 실제 게시 기능이 쓰는 함수를 그대로 호출해, 이 빌드가 참조하는 것과
         # 똑같은 site-packages(방금 설치한 playwright)에서 Chrome이 실제로
@@ -94,7 +91,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path stage | Out-Null
-          Copy-Item -Recurse -Path core, ai_workers, simulators, flet_app -Destination stage
+          Copy-Item -Recurse -Path core, ai_workers, flet_app -Destination stage
           Copy-Item -Path flet_app/pyproject.toml -Destination stage/pyproject.toml
           Copy-Item -Path flet_app/main.py -Destination stage/main.py
           Write-Host "----- stage/ 트리 -----"

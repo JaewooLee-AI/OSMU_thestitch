@@ -54,9 +54,8 @@ MODES: Dict[str, dict] = {
         "enforce_density": False,
         "rewrite_title": False,
         # Freed from keyword duty, the draft has room to actually develop the
-        # subject; without a target it tends to stop at the same ~800자 as the
-        # enforced modes and the extra room goes unused.
-        "length_hint": 1500,
+        # subject — the deepest of the three.
+        "length_range": (1800, 2500),
     },
     "balanced": {
         # '(기본)'을 라벨에 박아두지 않습니다. 기본 모드는 브랜드 킷에서 바꿀 수
@@ -72,12 +71,12 @@ MODES: Dict[str, dict] = {
         "density_min": 2,
         "density_max": 6,
         "rewrite_title": True,
-        "length_hint": None,
+        "length_range": (1500, 2000),
     },
     "seo": {
         "label": "노출 우선",
         "icon": "🔍",
-        "caption": "키워드를 제목 앞쪽과 본문에 확실히 배치합니다. 소재 설명은 그만큼 줄어듭니다.",
+        "caption": "키워드를 제목 앞쪽과 본문에 확실히 배치합니다.",
         "hint": HINT_PLACEMENT,
         "max_targets": 3,
         # Was 1, on the theory that a marketer who asked for the keyword
@@ -94,9 +93,23 @@ MODES: Dict[str, dict] = {
         "density_min": 3,
         "density_max": 6,
         "rewrite_title": True,
-        "length_hint": None,
+        "length_range": (1500, 2000),
     },
 }
+
+# Body length targets, in characters *excluding spaces* — the number Naver's
+# own editor shows. `length_range` is (min, max) per mode above.
+#
+# 균형 and 노출 우선 used to carry no target at all, and without one the
+# model stopped around 550~700자 per post (measured on every general post
+# both brands had published): photos did the talking and a reader who
+# didn't already know the product had nothing to read. Naver publishes no
+# length rule, but the working consensus for informational/product posts is
+# 1,500~2,000자 with photos, and exposure is this project's first goal — a
+# post that ranks and then answers nothing loses the ranking to dwell time.
+# The extra length has to come from explaining the subject, never from
+# brand padding; prompt_builder.length_block says how, and a notice with
+# little to say drops the target entirely (factsheet.is_brief_overall).
 
 ORDER = ["rich", "balanced", "seo"]
 
@@ -114,6 +127,14 @@ def resolve(mode: str | None, brand_kit: dict | None = None) -> dict:
     if candidate not in MODES:
         candidate = DEFAULT_MODE
     return {"key": candidate, **MODES[candidate]}
+
+
+def describe(mode_key: str) -> str:
+    """Caption plus the body-length target, for the mode pickers."""
+    profile = MODES[mode_key]
+    low_high = profile.get("length_range")
+    suffix = f" (본문 공백 제외 {low_high[0]:,}~{low_high[1]:,}자)" if low_high else ""
+    return profile["caption"] + suffix
 
 
 def label_of(mode: str | None) -> str:

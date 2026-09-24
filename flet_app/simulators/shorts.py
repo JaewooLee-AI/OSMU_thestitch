@@ -10,7 +10,7 @@ from __future__ import annotations
 import flet as ft
 
 from core import storage
-from simulators.base import all_images
+from flet_app.simulators.base import all_images
 
 CAPTION_SAFE_CHARS = 20
 FRAME_WIDTH = 340

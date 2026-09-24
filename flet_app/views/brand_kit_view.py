@@ -1,8 +1,6 @@
-"""Flet port of views/04_brand_kit.py.
+"""브랜드 킷.
 
-Business rules ported unchanged from the Streamlit version (see that file's
-own comments for the reasoning, kept here only where the Flet rewrite needed
-a different mechanism):
+Business rules (carried over from the original Streamlit screen):
 - a blank SEO-keyword weight cell means "no opinion yet" -> neutral 1.0, not 0
 - a blank "검색 타깃" checkbox means still included, not excluded
 - a keyword-competitiveness freshness warning must stay visible, since
@@ -101,7 +99,7 @@ def build(page: ft.Page, state: AppState) -> ft.Control:
         [
             ft.Text(
                 f"· {content_mode.MODES[k]['icon']} {content_mode.MODES[k]['label']} — "
-                f"{content_mode.MODES[k]['caption']}",
+                f"{content_mode.describe(k)}",
                 size=fs(12, scale),
                 color=BRAND_COLORS["text_muted"],
             )

@@ -28,7 +28,7 @@ from __future__ import annotations
 from core import repo
 
 # --- visual identity --------------------------------------------------------
-# 한복 오방색에서 뽑은 더봄봄 팔레트. assets/custom.css의 CSS 변수와 1:1 대응됩니다.
+# 한복 오방색에서 뽑은 더봄봄 팔레트. Flet 테마(flet_app/theme.py)가 이 값을 그대로 씁니다.
 BRAND_COLORS = {
     "primary": "#A6224B",      # 자주 — 저고리 고름
     "primary_dark": "#7C1738",
@@ -55,7 +55,8 @@ PERSONA = (
     "작가의 감성과 살림하는 사람의 실용 감각을 동시에 갖춘, 다정하지만 전문적인 화자입니다."
 )
 
-TONE_AND_MANNER = """- 존댓말을 씁니다. '~합니다'와 '~해요'를 자연스럽게 섞되, 문장은 2~3줄 안에서 끊습니다.
+TONE_AND_MANNER = """- 존댓말을 씁니다. '~합니다'와 '~해요'를 자연스럽게 섞습니다.
+- 한 문장은 40자 안팎에서 끊고, 한 문단은 2~3문장까지만 씁니다. 같은 뜻을 두 번 말하지 않습니다.
 - 환경 이야기를 첫 문단에 꺼내지 않습니다. 색감·질감·쓰임새를 먼저 말하고, 새활용 가치는 그 뒤에 붙입니다.
 - '~해야 합니다' 같은 계몽조·훈계조 표현을 쓰지 않습니다. 죄책감을 자극하지 않습니다.
 - 수치와 인증은 확인된 것만 씁니다. 근거 없는 환경 효과(탄소 몇 kg 절감 등)는 절대 쓰지 않습니다.
@@ -166,6 +167,10 @@ BLACKLIST_MAP = {
     # 수공예 브랜드가 가장 쓰고 싶어 하는 말이고, 실제 초안에서 나왔습니다.
     # 긴 항목이 먼저 치환되므로 '세상에 하나뿐인'이 '하나뿐인'보다 먼저 걸립니다.
     "세상에 하나뿐인": "저마다 다른",
+    # '세상에 단 하나뿐인'은 위 두 항목 어느 것과도 통째로 맞지 않아 '하나뿐인'만
+    # 바뀌었고, "세상에 단 저마다 다른"이라는 비문이 인스타 캡션에 실렸습니다.
+    "세상에 단 하나뿐인": "저마다 다른",
+    "단 하나뿐인": "저마다 다른",
     "하나뿐인": "저마다 다른",
     "완벽한": "세심한",
     "영구적으로": "오래도록",
@@ -216,3 +221,63 @@ def seed_if_empty() -> bool:
         vision_quality="economy",
     )
     return True
+
+
+# One-time corrections to text an earlier version of this file seeded into
+# existing Brand Kits. seed_if_empty() never touches a kit that already
+# exists, so a fix to a seeded default would otherwise reach new installs
+# only. Each (old, new) pair is applied once, and only where `old` is still
+# present verbatim — i.e. the admin never edited that line — so admin edits
+# are still never clobbered. For a new company this list can simply be empty.
+#
+# The seeded "문장은 2~3줄 안에서 끊습니다" permits 100+ character sentences,
+# so drafts stayed long-winded however often a marketer asked for shorter
+# sentences in a one-off revision (customer report). It becomes a measurable
+# limit.
+SEED_FIXES = [
+    ("- 존댓말을 씁니다. '~합니다'와 '~해요'를 자연스럽게 섞되, 문장은 2~3줄 안에서 끊습니다.",
+     "- 존댓말을 씁니다. '~합니다'와 '~해요'를 자연스럽게 섞습니다.\n- 한 문장은 40자 안팎에서 끊고, 한 문단은 2~3문장까지만 씁니다. 같은 뜻을 두 번 말하지 않습니다."),
+]
+_SEED_FIXES_STATE_KEY = "brand_seed_fixes_applied"
+
+# Same idea for the banned-term dictionary: entries added to BLACKLIST_MAP
+# after a kit was seeded. Each key is added once, and only if the admin's
+# dictionary doesn't already have it — an existing entry (with whatever
+# replacement the admin chose) always wins. Empty for a new company.
+SEED_BLACKLIST_ADDITIONS = {
+    "세상에 단 하나뿐인": "저마다 다른",
+    "단 하나뿐인": "저마다 다른",
+}
+
+
+def apply_seed_fixes() -> int:
+    """Applies SEED_FIXES to the saved tone guide and SEED_BLACKLIST_ADDITIONS
+    to the saved dictionary. Returns how many changes were made."""
+    done = set((repo.get_app_state(_SEED_FIXES_STATE_KEY) or {}).get("done") or [])
+    tone = repo.get_brand_kit().get("tone_and_manner") or ""
+    applied = 0
+    for old, new in SEED_FIXES:
+        if old in done:
+            continue
+        if old in tone:
+            tone = tone.replace(old, new)
+            applied += 1
+        done.add(old)
+    if applied:
+        repo.save_brand_kit(tone_and_manner=tone)
+
+    blacklist = dict(repo.get_brand_kit().get("blacklist_map") or {})
+    added = 0
+    for term, replacement in SEED_BLACKLIST_ADDITIONS.items():
+        marker = f"blacklist:{term}"
+        if marker in done:
+            continue
+        if term not in blacklist:
+            blacklist[term] = replacement
+            added += 1
+        done.add(marker)
+    if added:
+        repo.save_brand_kit(blacklist_map=blacklist)
+
+    repo.set_app_state(_SEED_FIXES_STATE_KEY, {"done": sorted(done)})
+    return applied + added

@@ -39,15 +39,25 @@ def persona_block(brand_kit: dict) -> List[str]:
     return parts
 
 
-def core_facts_block(brand_kit: dict, minimum: int = 2) -> List[str]:
+def core_facts_block(brand_kit: dict, maximum: int = 2) -> List[str]:
+    """The brand's verified facts, offered — not required.
+
+    This used to demand "최소 2개 이상" in every post. With one fixed list and
+    a quota, every post cited the same two or three facts in near-identical
+    sentences, which is most of why posts about similar products read alike
+    (a marketer reported rewriting four such posts by hand). The facts stay
+    in the prompt as the only numbers the model may use; whether and how many
+    to cite is now tied to the post's subject.
+    """
     facts = brand_kit.get("core_facts") or []
     if not facts:
         return []
     joined = "\n".join(f"- {fact}" for fact in facts)
     return [
-        "[회사 핵심 팩트 — 다루는 주제를 우리 회사의 제품/활동과 자연스럽게 연결할 수 있도록, "
-        f"아래 목록 중 최소 {minimum}개 이상을 본문 흐름에 맞춰 인용하세요. "
-        "목록에 없는 수치나 실적은 절대 지어내지 마세요]\n" + joined
+        "[회사 핵심 팩트 — 이 글의 소재와 직접 관련된 것이 있을 때만 0~"
+        f"{maximum}개를 골라 자연스럽게 쓰세요. 관련 없는 팩트를 끼워 넣지 말고, 최근 글에서 "
+        "이미 쓴 팩트라면 같은 문장으로 반복하지 마세요. 목록에 없는 수치나 실적은 절대 "
+        "지어내지 마세요]\n" + joined
     ]
 
 
@@ -66,9 +76,42 @@ def few_shot_block(brand_kit: dict) -> List[str]:
     if not samples:
         return []
     joined = "\n---\n".join(samples)
+    # Voice only. This used to say "어조, 문단 호흡, 정보 배치 순서를 최대한
+    # 동일하게 모방" — copying the *structure* made every post open, unfold
+    # and close in the same order, so posts about similar products converged
+    # on one template. Structure now follows the subject; the sample governs
+    # how sentences sound. The tone guide wins on any conflict, because the
+    # samples were seeded once while the guide is what the marketer edits.
     return [
-        "[우수 포스팅 참조 샘플 — 아래의 어조, 문단 호흡, 정보 배치 순서를 최대한 동일하게 "
-        "모방하세요. 내용을 그대로 베끼지는 마세요]\n" + joined
+        "[우수 포스팅 참조 샘플 — 아래 글의 말투와 문장 길이·호흡만 참고하세요. 글의 구성과 "
+        "정보 순서는 샘플을 따라 하지 말고 이 글의 소재에 맞게 새로 짜세요. 내용을 베끼지 "
+        "마세요. 샘플과 [톤앤매너 가이드]가 다르면 톤앤매너 가이드를 따르세요]\n" + joined
+    ]
+
+
+RECENT_POSTS_PROMPT_LIMIT = 5
+
+
+def recent_posts_block(recent: List[dict]) -> List[str]:
+    """Openings and endings of recent posts, as "don't repeat these".
+
+    Drafts from one brand kit converge on the same opening line and the same
+    closing call-to-action; showing the model what was already published is
+    the prevention half of ai_workers/body_variety.py (which measures).
+    Only the first/last sentence of each is sent — enough to steer away from
+    a template, a few hundred tokens at most.
+    """
+    if not recent:
+        return []
+    lines = []
+    for post in recent[:RECENT_POSTS_PROMPT_LIMIT]:
+        lines.append(
+            f"- 제목: {post['title']}\n  첫 문장: {post['opening']}\n  마지막 문장: {post['closing']}"
+        )
+    return [
+        "[최근 발행한 글 — 이 글들과 겹치지 않게 쓰세요. 첫 문장, 문단 구성 순서, 마지막 문장을 "
+        "아래와 다르게 새로 짓고, 같은 설명을 같은 문장으로 되풀이하지 마세요. 네이버는 같은 "
+        "블로그의 비슷한 글을 유사문서로 보고 노출을 낮춥니다]\n" + "\n".join(lines)
     ]
 
 
@@ -128,20 +171,28 @@ def seo_block(brand_kit: dict, hint: str = content_mode.HINT_RELEVANCE) -> List[
     ]
 
 
-def length_block(length_hint: int | None) -> List[str]:
-    """Asks for a longer piece when the mode has traded exposure for depth.
+def length_block(length_range) -> List[str]:
+    """The body-length target and, more importantly, what fills it.
 
-    Without it '내용 우선' produces the same ~800자 as the enforced modes —
-    the keyword duty is gone but nothing tells the model to spend the freed
-    space on the subject.
+    A target alone gets met with brand padding (company history, 인증 이력);
+    a sentence-length rule alone (톤앤매너 "한 문장 40자") shortens the whole
+    post. So the block asks for *more sentences, each short*, and names what
+    they should be about: the things a reader who has never seen the product
+    needs — the same reader the photos can't serve on their own.
     """
-    if not length_hint:
+    if not length_range:
         return []
+    low, high = length_range
     return [
-        f"[분량] 본문을 {length_hint}자 내외로 충분히 길게 쓰세요. 분량은 같은 말을 "
-        "반복하거나 일반적인 브랜드 소개를 늘려서 채우는 것이 아니라, **소재 자체를 더 "
-        "구체적으로** — 무엇을, 왜, 어떻게, 누구에게 — 풀어 써서 채웁니다. 제공된 자료에 "
-        "없는 사실을 지어내서 분량을 늘리는 것은 금지입니다."
+        f"[분량] 본문은 **공백 제외 {low:,}~{high:,}자**로 쓰세요. 문장은 [톤앤매너 가이드]대로 "
+        "짧게 끊고, 분량은 문장 수를 늘려서 채웁니다.\n"
+        "이 제품·소재를 **처음 보는 독자**도 이해할 수 있게 쓰세요. 사진만 보고는 알 수 없는 "
+        "것 — 무엇인지, 무엇으로 어떻게 만들었는지, 크기·구성·쓰임새, 어떤 사람·상황에 "
+        "맞는지, 받는 사람이 느낄 점, 주문·이용 방법 — 중 제공된 자료에 있는 것을 구체적으로 "
+        "풀어 쓰세요.\n"
+        "분량을 회사 소개, 브랜드 철학, 수상·인증 이력, 같은 말의 반복으로 채우지 마세요. "
+        "제공된 자료에 없는 사실을 지어내서 늘리는 것은 금지입니다 — 자료가 부족하면 "
+        "분량보다 정확성이 먼저입니다."
     ]
 
 
@@ -192,16 +243,24 @@ def notice_block(notice_fields: dict | None, product_fields: dict | None = None)
                 "독자가 더 알아야 할 것이 있으면 '자세한 내용은 문의해 주세요' 정도로만 "
                 "넘기세요."
             )
-        if factsheet.is_brief(sheet, given):
-            # 분량 목표를 걷어내는 것만으로는 부족합니다. 목표가 없어도 모델은
-            # 블로그 글다운 길이를 맞추려고 브랜드 소개를 끌어옵니다.
-            block += (
-                "\n\n[분량] 이 글은 알릴 사실이 적습니다. **짧게 쓰세요.** 회사 소개, "
-                "제품 라인업, 수상·인증 이력으로 분량을 늘리지 마세요. 읽는 사람이 알아야 "
-                "할 것은 위 사실과 그에 대한 짧은 안내뿐이고, 그것을 다 전했으면 글은 "
-                "거기서 끝나는 것이 맞습니다."
-            )
         blocks.append(block)
+
+    # 분량 목표를 걷어내는 것만으로는 부족합니다. 목표가 없어도 모델은 블로그
+    # 글다운 길이를 맞추려고 브랜드 소개를 끌어옵니다.
+    #
+    # 판단은 두 시트를 합친 기준(is_brief_overall)으로 한 번만 합니다 — 분량
+    # 목표를 걷어낼지 정하는 content_writer와 같은 기준입니다. 예전엔 시트마다
+    # is_brief를 따로 봐서, 공지 2개 + 제품 5개인 글에 목표 분량은 그대로 둔 채
+    # 공지 블록에만 "짧게 쓰세요"가 붙어 모델이 서로 반대인 지시를 받았습니다.
+    if factsheet.is_brief_overall(
+        [(factsheet.NOTICE, notice_fields), (factsheet.PRODUCT, product_fields)]
+    ):
+        blocks.append(
+            "[분량] 이 글은 알릴 사실이 적습니다. **짧게 쓰세요.** 회사 소개, "
+            "제품 라인업, 수상·인증 이력으로 분량을 늘리지 마세요. 읽는 사람이 알아야 "
+            "할 것은 위 사실과 그에 대한 짧은 안내뿐이고, 그것을 다 전했으면 글은 "
+            "거기서 끝나는 것이 맞습니다."
+        )
     return blocks
 
 
@@ -215,8 +274,13 @@ SUBJECT_INSTRUCTION = (
 
 
 def brand_voice_blocks(brand_kit: dict) -> List[str]:
-    """persona + tone + glossary — the subset every channel shares."""
-    return persona_block(brand_kit) + terminology_block(brand_kit)
+    """persona + tone + glossary + certification scope — what the Instagram,
+    X and Shorts writers get. They deliberately don't get the full fact list
+    (a caption isn't a fact sheet), but without the certification facts they
+    knew a certification existed and not which items hold it."""
+    from ai_workers.guardrail import certification_block
+
+    return persona_block(brand_kit) + terminology_block(brand_kit) + certification_block(brand_kit)
 
 
 BLOG_SYSTEM_PROMPT_BASE = (
@@ -237,7 +301,7 @@ def build_blog_system_prompt(brand_kit: dict, mode: dict | None = None) -> str:
     parts += few_shot_block(brand_kit)
     parts += terminology_block(brand_kit)
     parts += seo_block(brand_kit, profile.get("hint", content_mode.HINT_RELEVANCE))
-    parts += length_block(profile.get("length_hint"))
+    parts += length_block(profile.get("length_range"))
     return "\n\n".join(parts)
 
 
@@ -260,7 +324,10 @@ def photo_instruction(captions: dict) -> str:
         "옮겨 적어야 하며, '경로'라는 글자 자체를 쓰면 절대 안 됩니다. 예를 들어 첫 번째 사진의 "
         f"경로가 정확히 {example_path} 이므로, 그 사진을 쓸 자리에는 반드시 "
         f"[IMAGE: {example_path}] 라고 그대로 적어야 합니다. 경로를 요약하거나 다른 글자로 "
-        "바꾸지 마세요. 본문이 짧다면 문단을 늘려서라도 모든 사진이 들어갈 자리를 만드세요."
+        "바꾸지 마세요. 본문이 짧다면 문단을 늘려서라도 모든 사진이 들어갈 자리를 만드세요. "
+        "**사진만 이어 붙이지 마세요.** 각 사진 앞이나 뒤에 그 사진이 보여주는 것 — 무엇이고, "
+        "어디를 보면 되고, 왜 의미가 있는지 — 를 설명하는 문장을 2~3개씩 두세요. 제품을 잘 "
+        "모르는 독자는 사진이 아니라 이 설명을 읽고 이해합니다."
     )
 
 

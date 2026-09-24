@@ -1,13 +1,9 @@
-"""Channel simulators — Flet-native rewrite of the top-level `simulators/`
-package.
+"""Channel simulators — native Flet control trees showing how a post will
+look on each channel before it is published.
 
-`simulators/*.py` builds a complete HTML document for `st.components.v1.html`
-(a sandboxed iframe). Flet's WebView doesn't support Windows, so that iframe
-approach can't be reused there — this package renders the same information
-as native Flet control trees instead. The actual *data* shaping (which image
-tag goes where, how a caption/tweet gets cut, which photos are "extra") is
-unchanged and still lives in `simulators.base` / `ai_workers.photo_placement`;
-only the "turn that into markup" step is rewritten here.
+The data shaping (which image tag goes where, how a tweet gets cut, which
+photos are "extra") lives in `flet_app.simulators.base` /
+`ai_workers.photo_placement`; the modules here only turn it into controls.
 """
 from __future__ import annotations
 

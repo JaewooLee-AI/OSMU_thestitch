@@ -10,7 +10,7 @@ from __future__ import annotations
 import flet as ft
 
 from core import storage
-from simulators.base import content_blocks
+from flet_app.simulators.base import content_blocks
 
 from flet_app.theme import BRAND_COLORS
 

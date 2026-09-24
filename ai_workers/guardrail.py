@@ -51,27 +51,31 @@ AUDIT_SYSTEM_PROMPT = (
     "4) 최상급·배타적 표현 — '국내 최초', '업계 최고', '유일한', '완벽한'.\n"
     "5) 소비자를 위축시키는 공포·죄책감 소구 — '쓰지 않으면 지구가 망합니다' 류.\n"
     "6) **[검증된 사실]과 어긋나는 수치** — 가격대, 수량, 연도, 실적, 인증 건수. "
-    "[검증된 사실]에 없거나 그와 다른 숫자가 나오면 반드시 지적하고, corrected_text에서는 "
+    "[검증된 사실]에 없거나 그와 다른 숫자가 나오면 반드시 지적하고, replacement에서는 "
     "[검증된 사실]에 맞게 고치거나 숫자를 빼세요. 절대 새 숫자를 지어내지 마세요.\n\n"
     "제품의 색감·소재·쓰임새에 대한 사실 서술이나, 기부받은 한복을 재료로 쓴다는 "
     "설명 자체는 문제가 아닙니다. 과장하지 않은 표현까지 억지로 고치지 마세요.\n\n"
-    "텍스트 중간에 `[IMAGE: 경로]` 형식의 태그가 있다면 사진 삽입 위치 마크업이므로 "
-    "절대 삭제·수정·이동하지 말고 원래 자리에 글자 그대로 유지하세요.\n\n"
+    "텍스트 중간에 `[IMAGE: 경로]` 형식의 태그나 `<<<`로 시작하는 구분자가 있다면 "
+    "마크업이므로 phrase에 절대 포함하지 마세요.\n\n"
     "**issues에는 위반만 넣으세요.** '이런 정보를 더 넣으면 신뢰도가 올라갑니다' 같은 "
     "개선 제안은 위반이 아니므로 issues가 아니라 suggestions에 문자열로 넣으세요. "
     "빠뜨린 정보를 추가하라는 요구는 언제나 suggestions입니다 — 글에 없는 내용은 "
     "법령 위반이 아니라 선택의 문제입니다.\n\n"
-    "issues의 각 항목은 반드시 {\"phrase\": ..., \"note\": ...} 객체로 작성하세요. "
-    "phrase에는 본문에 실제로 등장하는, 문제가 된 표현 '하나만' 그대로 옮겨 적으세요 — "
-    "본문에 없는 문구를 넣으면 안 되고, note에서 언급하는 대안·추천 표현을 phrase에 넣어서도 "
-    "안 됩니다. 문제 표현이 여러 개면 항목을 여러 개로 나누세요. strengths에는 인증 근거를 "
+    "issues의 각 항목은 반드시 {\"phrase\": ..., \"note\": ..., \"replacement\": ...} "
+    "객체로 작성하세요. phrase에는 본문에 실제로 등장하는, 문제가 된 표현 '하나만' 글자 그대로 "
+    "옮겨 적으세요 — 본문에 없는 문구를 넣으면 안 되고, note에서 언급하는 대안·추천 표현을 "
+    "phrase에 넣어서도 안 됩니다. 문제 표현이 여러 개면 항목을 여러 개로 나누세요.\n"
+    "**전체 글을 다시 쓰지 마세요.** 대신 replacement에 phrase 자리에 그대로 들어갈 교정 "
+    "표현을 적으면, 시스템이 본문의 phrase를 replacement로 바꿉니다. 그러니 phrase는 바꾼 뒤에도 "
+    "문장이 자연스럽게 이어지도록 조사·어미까지 포함한 단위로 잡으세요(필요하면 문장 하나 "
+    "전체). replacement에 문제 표현을 다시 넣지 말고, 표현을 빼야 한다면 빈 문자열을 쓰세요. "
+    "strengths에는 인증 근거를 "
     "정확히 연결하는 등 이미 잘 지켜진 점을 1~3개 문자열로 짧게 적으세요(없으면 빈 배열).\n\n"
     "반드시 아래 JSON 형식으로만 응답하고 다른 설명은 포함하지 마세요:\n"
     '{"compliance_pass": true, "score": 90, "strengths": ["잘 지켜진 점 1"], '
     '"issues": [{"phrase": "본문에 실제로 등장하는 문제 표현", '
-    '"note": "문제 설명 및 권장 수정 방향"}], '
-    '"suggestions": ["위반은 아니지만 넣으면 좋을 내용"], '
-    '"corrected_text": "교정된 전체 텍스트"}'
+    '"note": "문제 설명", "replacement": "phrase 자리에 들어갈 교정 표현"}], '
+    '"suggestions": ["위반은 아니지만 넣으면 좋을 내용"]}'
 )
 
 
@@ -143,6 +147,87 @@ def check_certification_scope(text: str, brand_kit: dict) -> List[dict]:
             continue
         findings.append({"phrase": sentence, "note": CERT_SCOPE_NOTE})
     return findings
+
+
+def remove_certification_overclaims(text: str, brand_kit: dict) -> Tuple[str, List[str]]:
+    """Deletes the sentences check_certification_scope flags. For the short
+    SNS channels only (Instagram, X, Shorts).
+
+    The scope check only *detects*, by design — on a blog post the right fix
+    is usually naming the certified items, which needs judgement. A caption
+    is different: the over-claiming sentence is one line of brand filler
+    ("대표 제품들은 … 인증을 받아 …") in a few hundred characters, the post
+    reads fine without it, and leaving it flagged meant every such caption
+    shipped as '미해결' unless the marketer rewrote it by hand.
+    """
+    removed = []
+    for finding in check_certification_scope(text, brand_kit):
+        sentence = finding["phrase"]
+        if sentence and sentence in text:
+            text = text.replace(sentence, "", 1)
+            removed.append(sentence)
+    if removed:
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        text = re.sub(r"[ \t]+\n", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text, removed
+
+
+_ACRONYM_RE = re.compile(r"[A-Z]{3,}")
+
+
+def _certification_terms(brand_kit: dict) -> List[str]:
+    """Words that make a hashtag a certification claim: '인증' itself, plus
+    acronyms of certifying bodies named in the brand's certification facts
+    (e.g. a testing institute), so '#KOTITI' counts as well as '#…인증'."""
+    terms = {"인증"}
+    for fact in brand_kit.get("core_facts") or []:
+        fact = str(fact)
+        if "인증" in fact:
+            terms.update(_ACRONYM_RE.findall(fact))
+    return sorted(terms)
+
+
+def filter_certification_hashtags(
+    hashtags: List[str], shipped_text: str, brand_kit: dict
+) -> Tuple[List[str], List[str]]:
+    """Drops certification hashtags from a post whose text makes no
+    certification statement. Returns (kept, removed).
+
+    Hashtags were never audited at all: a caption about a product that is
+    not certified went out tagged '#새활용제품인증'. A tag is a claim with no
+    sentence around it to scope it, so it is only kept when the shipped text
+    itself carries a certification statement (which the scope check has
+    already vetted).
+    """
+    terms = _certification_terms(brand_kit)
+    body_mentions = any(t in (shipped_text or "") for t in terms)
+    kept, removed = [], []
+    for tag in hashtags or []:
+        if not body_mentions and any(t in str(tag) for t in terms):
+            removed.append(tag)
+        else:
+            kept.append(tag)
+    return kept, removed
+
+
+def certification_block(brand_kit: dict) -> List[str]:
+    """What is certified, for the channels that don't get the full fact list.
+
+    The blog draft sees every core fact; the Instagram/X/Shorts writers only
+    got persona, tone and glossary. The glossary names the certification but
+    not which items hold it, so a caption about an uncertified item wrote
+    "대표 제품들은 … 인증을 받아" — the model knew the certification existed
+    and had no way to know its scope.
+    """
+    facts = [str(f).strip() for f in (brand_kit.get("core_facts") or []) if "인증" in str(f)]
+    if not facts:
+        return []
+    return [
+        "[인증 사실 — 인증은 아래에 적힌 대상에만 해당합니다. 이 글의 제품이 목록에 없으면 인증을 "
+        "언급하지 마세요. '제품들', '대표 제품', '모든 제품'처럼 범위를 넓혀 쓰지 말고, 인증 관련 "
+        "해시태그도 달지 마세요]\n" + "\n".join(f"- {f}" for f in facts)
+    ]
 
 
 def _verified_facts_block(
@@ -247,6 +332,10 @@ _SUGGESTION_HINTS = (
     "권장", "추천", "좋습니다", "좋을 것", "좋겠습니다",
     "도움이 됩", "도움이 될", "효과적", "높아집", "높아질", "높이는 것", "높일 수",
     "향상됩", "향상될", "전달됩니다", "전달될",
+    # "…명확히 한정하여 표기하면 소비자의 오인을 예방할 수 있습니다" — preventive
+    # advice, not a cited violation. Without these it kept an Instagram caption
+    # at '미해결' forever: phrase-less, so nothing could ever mark it resolved.
+    "예방할 수", "예방됩", "방지할 수", "방지됩", "명확히 하면", "명확히 표기", "표기하면",
 )
 
 # 반대로 이 말들이 있으면 제안처럼 쓰여 있어도 위반 판정으로 둡니다. 인증 범위
@@ -362,21 +451,38 @@ def run_llm_audit(
     notice_fields: Optional[dict] = None,
     product_fields: Optional[dict] = None,
 ) -> Dict:
-    """Structured compliance report. Falls back to a conservative 'pass with
-    no changes' if JSON parsing fails — an audit failure must never crash the
-    pipeline or silently mangle the draft."""
-    raw = generate_text(
-        vendor=vendor,
-        prompt=text,
-        system=AUDIT_SYSTEM_PROMPT + _verified_facts_block(brand_kit or {}, notice_fields, product_fields),
-        max_tokens=2500,
-        note="guardrail-audit",
-    )
+    """Structured compliance report.
+
+    **Fails closed.** An audit that errors out or returns unparseable output
+    used to report `compliance_pass=True, score=100` — and the most common
+    cause was the audit's own output being cut off, which happens on exactly
+    the long posts with the most claims to check. A failed audit now comes
+    back as one open, phrase-less issue (`audit_failed=True`): the draft is
+    kept untouched, nothing crashes, but nothing reads as '검수 통과' either.
+
+    The model returns phrase -> replacement edits instead of reproducing the
+    whole text: output shrinks from 'the entire post' to a few lines (which is
+    what made truncation likely), and the parts of the post the audit did not
+    object to can no longer be silently rephrased along the way.
+    """
+    try:
+        raw = generate_text(
+            vendor=vendor,
+            prompt=text,
+            system=AUDIT_SYSTEM_PROMPT + _verified_facts_block(brand_kit or {}, notice_fields, product_fields),
+            max_tokens=2000,
+            note="guardrail-audit",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _failed_audit(text, f"검수 호출 실패: {exc}")
+
     try:
         cleaned = re.sub(r"```json\s*|```\s*$", "", raw.strip())
         match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-        parsed = json.loads(match.group(0)) if match else {}
-        issues = parsed.get("issues", [])
+        if not match:
+            return _failed_audit(text, "검수 응답에서 결과(JSON)를 찾지 못했습니다", raw)
+        parsed = json.loads(match.group(0))
+        issues = parsed.get("issues") or []
         grounded, unverified, phrase_map, misfiled = _classify_issues(issues, text)
         # 모델이 스스로 suggestions에 넣은 것도 그대로 믿지는 않습니다. 첫 5건
         # 테스트에서 '세상에 하나뿐인'을 두고 "객관적·절대적 사실로 오인될 수 있는
@@ -386,27 +492,100 @@ def run_llm_audit(
         # 되돌립니다 — 이 방향의 오류가 더 비싸다는 원칙은 여기서도 같습니다.
         declared, promoted = [], []
         for item in parsed.get("suggestions") or []:
-            text = str(item).strip()
-            if not text:
+            # (`suggestion`, not `text`: reusing the name used to overwrite the
+            # audited text, so a missing corrected_text fell back to the last
+            # suggestion string instead of the post.)
+            suggestion = str(item).strip()
+            if not suggestion:
                 continue
-            (promoted if _has_violation_vocabulary(text) else declared).append(text)
+            (promoted if _has_violation_vocabulary(suggestion) else declared).append(suggestion)
         grounded += promoted
+
+        # Only edits for findings that survived classification are applied —
+        # a finding downgraded to a suggestion must not rewrite the post.
+        replacements = _replacements(issues)
+        live_phrases = [p for p in phrase_map.values() if p]
+        corrected = _apply_edits(text, {p: replacements[p] for p in live_phrases if p in replacements})
+
+        try:
+            score = int(parsed.get("score"))
+        except (TypeError, ValueError):
+            score = None
         return {
-            "compliance_pass": bool(parsed.get("compliance_pass", True)),
-            "score": int(parsed.get("score", 100)),
-            "strengths": parsed.get("strengths", []),
+            "compliance_pass": not grounded,
+            "score": score,
+            "strengths": parsed.get("strengths") or [],
             "grounded_issues": grounded,
             "unverified_issues": unverified,
             "suggestions": declared + misfiled,
             "issue_phrases": phrase_map,
-            "corrected_text": parsed.get("corrected_text") or text,
+            "corrected_text": corrected,
         }
-    except Exception:
-        return {
-            "compliance_pass": True, "score": 100, "strengths": [], "grounded_issues": [],
-            "unverified_issues": [], "suggestions": [], "issue_phrases": {},
-            "corrected_text": text, "parse_error": raw,
-        }
+    except Exception as exc:  # noqa: BLE001
+        return _failed_audit(text, f"검수 결과를 해석하지 못했습니다 ({exc})", raw)
+
+
+AUDIT_FAILED_ISSUE = (
+    "⚠️ 컴플라이언스 검수를 완료하지 못했습니다 — {reason}. 이 글은 검수되지 않은 상태이니 "
+    "워크벤치에서 수정 요청을 비워 둔 채 [✏️ 수정 반영]을 눌러 검수만 다시 실행하거나, "
+    "초안을 다시 생성하세요."
+)
+
+
+def _failed_audit(text: str, reason: str, raw: str = "") -> Dict:
+    print(f"[guardrail] audit failed: {reason}")
+    return {
+        "compliance_pass": False, "score": None, "strengths": [],
+        # Phrase-less on purpose: content_writer's resolution check keeps a
+        # phrase-less issue open, so no later rewrite can make it look fixed.
+        "grounded_issues": [AUDIT_FAILED_ISSUE.format(reason=str(reason)[:300])],
+        "unverified_issues": [], "suggestions": [], "issue_phrases": {},
+        "corrected_text": text, "parse_error": raw, "audit_failed": True,
+    }
+
+
+# Markup a replacement must never touch: photo slots, and the delimiters the
+# X/Shorts audits use to split one audited string back into tweets/scenes.
+_PROTECTED_MARKUP = ("[IMAGE:", "<<<")
+
+
+def _replacements(raw_issues: List) -> Dict[str, str]:
+    """phrase -> replacement for every well-formed edit the audit proposed."""
+    out: Dict[str, str] = {}
+    for item in raw_issues:
+        if not isinstance(item, dict):
+            continue
+        phrase = (item.get("phrase") or "").strip()
+        replacement = item.get("replacement")
+        if not phrase or replacement is None:
+            continue
+        out[phrase] = str(replacement).strip()
+    return out
+
+
+def _apply_edits(text: str, edits: Dict[str, str]) -> str:
+    """Applies phrase -> replacement edits deterministically.
+
+    Longest phrase first, for the same reason as apply_blacklist_dictionary:
+    one cited phrase is often a substring of another. An edit whose phrase or
+    replacement touches protected markup is skipped rather than risk losing a
+    photo slot or misaligning a thread.
+    """
+    corrected = text
+    for phrase in sorted(edits, key=len, reverse=True):
+        replacement = edits[phrase]
+        if any(m in phrase or m in replacement for m in _PROTECTED_MARKUP):
+            continue
+        if phrase == replacement:
+            continue
+        pattern = re.compile(re.escape(phrase), re.IGNORECASE)
+        if not pattern.search(corrected):
+            continue
+        corrected = pattern.sub(lambda _m: replacement, corrected)
+    # A deletion leaves doubled spaces / a space before punctuation behind.
+    corrected = re.sub(r"[ \t]{2,}", " ", corrected)
+    corrected = re.sub(r"[ \t]+([.,!?])", r"\1", corrected)
+    return corrected
 
 
 def review_and_sanitize(
@@ -447,6 +626,7 @@ def review_and_sanitize(
         "suggestions": audit.get("suggestions") or [],
         "issue_phrases": phrase_map,
         "cert_scope_issues": [f["phrase"] for f in cert_findings],
+        "audit_failed": bool(audit.get("audit_failed")),
     }
 
 
