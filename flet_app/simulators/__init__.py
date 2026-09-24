@@ -19,19 +19,31 @@ CHANNELS = {
 }
 
 
+# Shown instead of an account name when the brand kit has no Instagram handle.
+# The previews used to fall back to a made-up handle, which read as the real
+# account in every screenshot and review.
+HANDLE_MISSING = "(인스타 핸들 미입력)"
+
+
+def _instagram_handle(brand_kit: dict, at: bool = False) -> str:
+    handle = (brand_kit.get("instagram_handle") or "").strip().lstrip("@")
+    if not handle:
+        return HANDLE_MISSING
+    return f"@{handle}" if at else handle
+
 def render(channel: str, campaign: dict, is_mobile: bool = False, brand_kit: dict | None = None, **kwargs) -> ft.Control:
     brand_kit = brand_kit or {}
     if channel == "naver":
         blog_name = (brand_kit.get("sub_brand") or brand_kit.get("brand_name") or "공식 블로그") + " 공식 블로그"
         return naver_blog.render(campaign, is_mobile=is_mobile, blog_name=blog_name)
     if channel == "instagram":
-        return instagram.render(campaign, username=brand_kit.get("instagram_handle") or "thestitch_artplay")
+        return instagram.render(campaign, username=_instagram_handle(brand_kit))
     if channel == "x":
         return x_thread.render(campaign, display_name=brand_kit.get("sub_brand") or "더봄봄")
     if channel == "shorts":
         return shorts.render(
             campaign,
-            handle="@" + (brand_kit.get("instagram_handle") or "thestitch_artplay"),
+            handle=_instagram_handle(brand_kit, at=True),
             show_dead_zone=kwargs.get("show_dead_zone", True),
         )
     raise ValueError(f"Unknown channel: {channel}")

@@ -271,6 +271,21 @@ def recover_interrupted_processing() -> int:
         ).rowcount
 
 
+def mark_sns_stale(campaign_id: str) -> None:
+    """Flags the SNS channels as describing an older body — used when the
+    marketer edits the body by hand. regenerate_sns clears it."""
+    campaign = get_campaign(campaign_id)
+    if not campaign:
+        return
+    report = dict(campaign.get("guardrail_report") or {})
+    if not (campaign.get("instagram_caption") or campaign.get("x_content") or campaign.get("shorts_script")):
+        return
+    if report.get("sns_stale"):
+        return
+    report["sns_stale"] = True
+    update_campaign(campaign_id, guardrail_report=report)
+
+
 def delete_campaign(campaign_id: str) -> None:
     with get_conn() as conn:
         conn.execute("delete from campaigns where id = ?", (campaign_id,))

@@ -19,7 +19,8 @@ import time
 import flet as ft
 
 from ai_workers import content_mode, factsheet, vision
-from ai_workers.content_writer import LENGTH_MODES, revise_content, run_pipeline
+from ai_workers.content_writer import LENGTH_MODES, regenerate_sns, revise_content, run_pipeline
+from ai_workers.sns_validator import TWEET_HARD_MAX, x_weighted_length
 from core import repo, storage
 
 import flet_app.simulators as sim
@@ -619,6 +620,55 @@ def _build_campaign_editor(page: ft.Page, campaign_id: str, scale: float, reload
             ft.Row([queue_spinner, queue_status], spacing=8),
         ]
 
+        # 본문을 고친 뒤(수정 반영·직접 편집) 인스타·X·쇼츠는 예전 본문 기준으로
+        # 남는다. 예전엔 아무 표시가 없어서, 본문에서 고친 가격·날짜가 SNS에는
+        # 옛 값 그대로 나갈 수 있었다.
+        if (campaign.get("guardrail_report") or {}).get("sns_stale"):
+            sns_status = ft.Text("", size=fs(12, scale))
+            sns_spinner = ft.ProgressRing(width=16, height=16, stroke_width=2, visible=False)
+            sns_button = ft.FilledButton("📣 SNS 3채널 다시 만들기 (현재 본문 기준)", disabled=is_processing)
+
+            def on_regen_sns(e: ft.Event) -> None:
+                sns_button.disabled = True
+                sns_button.update()
+                sns_spinner.visible = True
+                sns_spinner.update()
+                sns_status.value = "⏳ 인스타·X·쇼츠·발행 태그를 다시 만드는 중…"
+                sns_status.color = BRAND_COLORS["text_muted"]
+                sns_status.update()
+
+                def _work() -> None:
+                    try:
+                        regenerate_sns(campaign_id)
+                    except Exception as exc:  # noqa: BLE001
+                        sns_status.value = f"❌ 실패: {exc}"
+                        sns_status.color = "#B3261E"
+                        sns_spinner.visible = False
+                        sns_button.disabled = False
+                        sns_spinner.update()
+                        sns_button.update()
+                        sns_status.update()
+                        return
+                    sns_status.value = "✅ 다시 만들었습니다."
+                    sns_status.color = "#1B6E3C"
+                    sns_spinner.visible = False
+                    sns_spinner.update()
+                    sns_status.update()
+                    time.sleep(0.8)
+                    reload()
+
+                page.run_thread(_work)
+
+            sns_button.on_click = on_regen_sns
+            controls += [
+                _status_box(
+                    "📣 인스타·X·쇼츠가 수정 전 본문 기준입니다 — 본문에서 바꾼 날짜·가격·내용이 SNS에는 "
+                    "반영돼 있지 않습니다. 게시 전에 다시 만드세요.",
+                    scale, "warning",
+                ),
+                ft.Row([sns_button, sns_spinner, sns_status], spacing=8, wrap=True),
+            ]
+
         controls += _build_report_controls(campaign, scale)
 
     return ft.Column(controls, spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -636,10 +686,13 @@ def _build_channel_tabs(page: ft.Page, campaign: dict, title_field: ft.TextField
     naver_status = ft.Text("", size=fs(12, scale), color="#1B6E3C")
 
     def on_save_naver(e: ft.Event) -> None:
+        body_changed = (body_field.value or "").strip() != (campaign.get("content") or "").strip()
         repo.update_campaign(
             campaign_id, title=title_field.value.strip() or None, content=body_field.value,
             naver_hashtags=[t for t in naver_tags_field.value.split() if t.strip()],
         )
+        if body_changed:
+            repo.mark_sns_stale(campaign_id)
         naver_status.value = "저장했습니다."
         naver_status.update()
         refresh_sim()
@@ -820,7 +873,7 @@ def _build_channel_tabs(page: ft.Page, campaign: dict, title_field: ft.TextField
             x_tags_field,
             ft.Row([ft.FilledButton("스레드 저장", on_click=on_save_x), x_status]),
             *collapsible("📋 복사해서 X에 직접 붙여넣기", ft.Column(
-                [_copy_field(f"트윗 {i}/{len(current_tweets)}", t, page, scale, f"{len(t)}자") for i, t in enumerate(current_tweets, start=1)]
+                [_copy_field(f"트윗 {i}/{len(current_tweets)}", t, page, scale, f"X 기준 {x_weighted_length(t)}/{TWEET_HARD_MAX}") for i, t in enumerate(current_tweets, start=1)]
                 + [_copy_field("해시태그", x_tags_field.value, page, scale)],
                 spacing=8,
             )),
@@ -982,13 +1035,29 @@ def _build_report_controls(campaign: dict, scale: float) -> list[ft.Control]:
 
     sns = report.get("sns_checks")
     if sns:
-        all_issues = (sns.get("x") or []) + (sns.get("instagram") or [])
+        all_issues = []
+        for key in ("x", "instagram", "shorts", "naver_tags"):
+            all_issues += sns.get(key) or []
         if all_issues:
             for issue in all_issues:
                 icon = {"fixed": "🔧", "warn": "⚠️", "blocked": "⛔"}.get(issue["level"], "•")
                 body.append(ft.Text(f"{icon} SNS 형식: {issue['message']}", size=fs(11, scale)))
         else:
-            body.append(ft.Text("✅ SNS 형식(트윗 길이·해시태그·훅): 문제 없음", size=fs(11, scale)))
+            body.append(ft.Text("✅ SNS 형식(트윗 길이·해시태그·훅·쇼츠 자막·발행 태그): 문제 없음", size=fs(11, scale)))
+
+    sns_pf = report.get("sns_proofread")
+    if sns_pf:
+        body.append(ft.Text(f"🔤 SNS 맞춤법·오탈자 {len(sns_pf)}건 교정", size=fs(11, scale)))
+        for fix in sns_pf:
+            body.append(ft.Text(f"　• [{fix.get('kind', '교정')}] {fix['before']} → {fix['after']}", size=fs(10, scale)))
+
+    gap_labels = {"instagram": "인스타 캡션", "x": "X 스레드"}
+    for ch_key, missing in (report.get("sns_fact_gaps") or {}).items():
+        body.append(ft.Text(
+            f"📋 {gap_labels.get(ch_key, ch_key)}에 없는 입력값 — {', '.join(missing)} "
+            "(짧은 글이라 빠질 수 있지만, 날짜·가격이 필요한 글이면 직접 넣으세요)",
+            size=fs(11, scale),
+        ))
 
     pf = report.get("proofread")
     if pf is not None:

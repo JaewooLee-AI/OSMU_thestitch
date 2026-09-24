@@ -60,6 +60,8 @@ from ai_workers import factsheet
 from ai_workers import search_intent
 from ai_workers.proofreader import proofread
 from ai_workers.seo_optimizer import (
+    TITLE_IDEAL_MAX,
+    TITLE_IDEAL_MIN,
     check_keyword_density,
     rebalance_keywords,
     rewrite_title_for_keyword,
@@ -68,7 +70,12 @@ from ai_workers.seo_optimizer import (
     title_keyword_coverage,
 )
 from ai_workers.shorts_writer import write_shorts_script
-from ai_workers.sns_validator import validate_instagram, validate_tweets
+from ai_workers.sns_validator import (
+    validate_instagram,
+    validate_naver_tags,
+    validate_shorts,
+    validate_tweets,
+)
 from ai_workers.title_variety import (
     SIMILARITY_THRESHOLD,
     avoidance_instruction,
@@ -105,7 +112,11 @@ def _title_generation_instruction(seo_keywords: List[str], source_title: str = "
         )
     return (
         "\n\n[제목 자동 생성 안내] 담당자가 제목을 입력하지 않았습니다. 본문보다 먼저, 첫 줄에 "
-        "정확히 `[TITLE: 생성한 제목]` 형식으로 이 포스트에 어울리는 제목을 **25자 이내로** 출력한 "
+        # Same band the title scorer rewards (seo_optimizer.TITLE_IDEAL_MIN/MAX):
+        # this used to cap at 25, below the scorer's sweet spot, so a 26~30자
+        # title could only ever come out of the corrective rewrite pass.
+        "정확히 `[TITLE: 생성한 제목]` 형식으로 이 포스트에 어울리는 제목을 "
+        f"**{TITLE_IDEAL_MIN}~{TITLE_IDEAL_MAX}자로** 출력한 "
         "뒤, 줄바꿈하고 그 다음부터 본문을 이어서 작성하세요. 부제목이나 설명을 덧붙이지 말고 "
         f"제목 하나만 짧게 쓰세요.{keyword_line}"
     )
@@ -706,67 +717,14 @@ def run_pipeline(campaign_id: str, progress: Progress = None) -> Dict:
         report["title_variety"] = title_variety
 
         # --- stage 7: secondary channels ---
-        caption_values = list(captions.values())
+        # Shared with regenerate_sns so the first run and a later "SNS만 다시
+        # 만들기" produce the channels the same way (see _secondary_channels).
         seed_note = memo or (article_text[:800] if article_text else final_title)
-
-        # The four writers are independent of each other (each reads only the
-        # memo/captions or the finished body), and each is 1~2 sequential LLM
-        # round trips — run them concurrently so the slowest one, not the sum
-        # of all four, sets the wait. _safe keeps each one best-effort.
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            ig_future = pool.submit(
-                _safe, progress, "인스타그램 캡션 생성 중…",
-                lambda: _guarded_instagram(
-                    seed_note, caption_values, brand_kit, vendor, notice_fields, product_fields
-                ),
-                {"caption": "", "hashtags": []},
-            )
-            x_future = pool.submit(
-                _safe, progress, "X 스레드 생성 중…",
-                lambda: _guarded_x(
-                    seed_note, caption_values, brand_kit, vendor, notice_fields, product_fields
-                ),
-                {"tweets": [], "hashtags": []},
-            )
-            shorts_future = pool.submit(
-                _safe, progress, "쇼츠 구성안 생성 중…",
-                lambda: _guarded_shorts(
-                    seed_note, caption_values, brand_kit, vendor, notice_fields, product_fields
-                ),
-                {"title": "", "hook": "", "scenes": [], "hashtags": []},
-            )
-            tags_future = pool.submit(
-                _safe, progress, "네이버 발행 태그 생성 중…",
-                lambda: write_naver_hashtags(final_title, final_content, brand_kit, vendor),
-                [],
-            )
-            instagram = ig_future.result()
-            x_result = x_future.result()
-            shorts = shorts_future.result()
-            naver_hashtags = tags_future.result()
-
-        # --- stage 7b: platform format checks ---
-        # The writers are only *told* about the 240-character tweet ceiling and
-        # the 125-character Instagram fold. Verify it: an over-long tweet is
-        # rejected by X outright, which is a harder failure than any SEO miss.
-        _report(progress, "SNS 형식 검증 중…")
-        x_result["tweets"], x_issues = validate_tweets(x_result["tweets"])
-        instagram["caption"], instagram["hashtags"], ig_issues = validate_instagram(
-            instagram["caption"], instagram["hashtags"]
+        sns_fields, sns_report = _secondary_channels(
+            seed_note, list(captions.values()), final_title, final_content, brand_kit, vendor,
+            notice_fields, product_fields, target_keywords, progress,
         )
-        report["sns_checks"] = {"x": x_issues, "instagram": ig_issues}
-        # 형식 검증과는 별개입니다 — 이건 컴플라이언스 위반이 실제로 남아 있는지이고,
-        # 위 sns_checks(글자수·해시태그 개수)와 섞이면 화면에서 사라지기 쉽습니다.
-        # _guarded_instagram/_guarded_x가 감사는 이미 돌렸는데 결과를 버리고 있었고,
-        # 그 결과 미보유 인증 확대 문장이 리포트에 아무 표시 없이 발행된 적이 있습니다.
-        # shorts_script는 DB 컬럼 그대로 저장되므로, 리포트 전용인 compliance 키는
-        # 저장 전에 떼어냅니다 — 인스타/X와 동일하게 캡션 자체와 감사 결과를 분리합니다.
-        shorts_compliance = shorts.pop("compliance", None) or {"checked": False}
-        report["sns_compliance"] = {
-            "instagram": instagram.get("compliance") or {"checked": False},
-            "x": x_result.get("compliance") or {"checked": False},
-            "shorts": shorts_compliance,
-        }
+        report.update(sns_report)
 
         repo.update_campaign(
             campaign_id,
@@ -776,12 +734,7 @@ def run_pipeline(campaign_id: str, progress: Progress = None) -> Dict:
             content=final_content,
             guardrail_passed=report["compliance_pass"],
             guardrail_report=report,
-            instagram_caption=instagram["caption"],
-            instagram_hashtags=instagram["hashtags"],
-            x_content=x_result["tweets"],
-            x_hashtags=x_result["hashtags"],
-            naver_hashtags=naver_hashtags,
-            shorts_script=shorts,
+            **sns_fields,
         )
         # Outlives this campaign on purpose, so a future run still avoids this
         # title after the marketer prunes the campaign list (core/db.py).
@@ -825,10 +778,12 @@ def revise_content(
     loop. The revision output is fresh LLM text making brand claims, so it
     goes through the same `_quality_pass` audit rather than a lighter one.
 
-    Instagram/X/쇼츠 are deliberately not regenerated: they are written from
-    the memo and photo captions, not from this body, so re-running them would
-    spend four LLM calls to produce the same text. Naver tags are refreshed
-    because they are derived from the body.
+    Instagram/X/쇼츠 are not regenerated automatically — most revisions are
+    wording changes that don't need four more LLM calls. Instead, when the
+    body changed, the report marks them `sns_stale` and the workbench offers
+    regenerate_sns ("SNS 3채널 다시 만들기"), so a price or date fixed in the
+    body can't silently stay wrong in the SNS copy. Naver tags are refreshed
+    here because they are derived from the body.
     """
     campaign = repo.get_campaign(campaign_id)
     if not campaign:
@@ -932,6 +887,23 @@ def revise_content(
             lambda: write_naver_hashtags(final_title, final_content, brand_kit, vendor),
             campaign.get("naver_hashtags") or [],
         )
+        naver_hashtags, tag_issues = validate_naver_tags(
+            naver_hashtags, list(target_keywords) + list(seo_keywords)
+        )
+
+        # The SNS channels aren't regenerated here (see docstring), and this
+        # report replaces the old one — which used to drop the channels'
+        # compliance/format results along with it. Carry them over, and say
+        # plainly when they now describe an older body.
+        previous = campaign.get("guardrail_report") or {}
+        for key in SNS_REPORT_KEYS:
+            if key in previous:
+                report[key] = previous[key]
+        report.setdefault("sns_checks", {})["naver_tags"] = tag_issues
+        has_sns = bool(campaign.get("instagram_caption") or campaign.get("x_content") or campaign.get("shorts_script"))
+        report["sns_stale"] = has_sns and (
+            bool(previous.get("sns_stale")) or final_content.strip() != (campaign.get("content") or "").strip()
+        )
 
         repo.update_campaign(
             campaign_id,
@@ -950,6 +922,245 @@ def revise_content(
         # than being demoted to 'failed' — which would hide a perfectly good
         # draft behind an error state over a transient API hiccup. The error
         # is still recorded and re-raised for the screen to show.
+        repo.update_campaign(
+            campaign_id,
+            status=previous_status if previous_status != "processing" else "draft",
+            publish_error=str(exc),
+        )
+        raise
+
+
+# How much of the finished blog body the SNS writers see. Enough to carry the
+# facts and figures of a normal post; the writers only need to stay consistent
+# with it, not reproduce it.
+SNS_BODY_EXCERPT = 2000
+
+_SNS_SEGMENT = "\n<<<SEG>>>\n"
+
+
+def _sns_facts(final_content: str, notice_fields: dict, product_fields: dict) -> str:
+    """What the SNS writers must agree with: the confirmed notice/product
+    values and the finished, already-audited blog body.
+
+    The writers used to get only the memo and photo captions. A date, price
+    or quantity that lived in the notice/product sheets — or a figure from the
+    news article on a newsjacking post — never reached Instagram, X or Shorts,
+    so those channels either left it out or had to guess it.
+    """
+    blocks = []
+    lines = []
+    for sheet, given in ((factsheet.NOTICE, notice_fields), (factsheet.PRODUCT, product_fields)):
+        lines += [f"- {sheet.labels[k]}: {v}" for k, v in factsheet.clean(sheet, given).items()]
+    if lines:
+        blocks.append(
+            "[이 글의 확정 사실 — 일시·장소·가격·수량 등은 아래와 똑같이 쓰세요. "
+            "여기에 없는 숫자는 지어내지 마세요]\n" + "\n".join(lines)
+        )
+    body = re.sub(r"\[IMAGE:[^\]]*\]", "", final_content or "")
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    if body:
+        blocks.append(
+            "[같은 소재로 이미 검수를 마친 네이버 블로그 본문 — 내용과 숫자가 이 글과 어긋나면 "
+            "안 됩니다. 문장을 그대로 옮기지 말고 이 채널에 맞게 새로 쓰세요]\n"
+            + body[:SNS_BODY_EXCERPT]
+        )
+    return "\n\n".join(blocks)
+
+
+def _proofread_sns(instagram: dict, x_result: dict, shorts: dict, brand_kit: dict, vendor: str) -> List[Dict]:
+    """Spelling/spacing for all three SNS channels in **one** call.
+
+    Proofreading used to run on the blog body only, so captions, tweets and
+    on-screen text shipped unchecked. One call over the joined text instead of
+    three keeps the cost at a single short request; if the model disturbs the
+    segment delimiters the originals are kept (the corrections are optional,
+    the alignment is not). Returns the applied corrections for the report.
+    """
+    scenes = shorts.get("scenes") or []
+    segments = (
+        [instagram.get("caption") or ""]
+        + list(x_result.get("tweets") or [])
+        + [shorts.get("title") or "", shorts.get("hook") or ""]
+        + [s.get("caption") or "" for s in scenes]
+    )
+    if not any(seg.strip() for seg in segments):
+        return []
+    try:
+        corrected, applied, _rejected = proofread(_SNS_SEGMENT.join(segments), brand_kit, vendor)
+    except Exception as exc:  # noqa: BLE001 — proofreading is never allowed to fail a run
+        print(f"[content_writer] SNS proofread skipped: {exc}")
+        return []
+    parts = corrected.split(_SNS_SEGMENT)
+    if len(parts) != len(segments):
+        print(f"[content_writer] SNS proofread returned {len(parts)} segments for {len(segments)} — keeping originals")
+        return []
+
+    n_tweets = len(x_result.get("tweets") or [])
+    instagram["caption"] = parts[0]
+    x_result["tweets"] = parts[1:1 + n_tweets]
+    shorts["title"], shorts["hook"] = parts[1 + n_tweets], parts[2 + n_tweets]
+    for scene, caption in zip(scenes, parts[3 + n_tweets:]):
+        scene["caption"] = caption
+    return applied
+
+
+def _sns_fact_coverage(instagram: dict, x_result: dict, notice_fields: dict, product_fields: dict) -> Dict:
+    """Which confirmed notice/product values each SNS post left out — the
+    same measurement the blog body gets (factsheet.coverage). Report only: a
+    caption doesn't have to carry every field, but the marketer should see
+    that the date or price isn't there before posting it."""
+    out = {}
+    texts = {"instagram": instagram.get("caption") or "", "x": "\n".join(x_result.get("tweets") or [])}
+    for channel, text in texts.items():
+        missing = []
+        for sheet, given in ((factsheet.NOTICE, notice_fields), (factsheet.PRODUCT, product_fields)):
+            cov = factsheet.coverage(sheet, text, given)
+            if cov.get("checked"):
+                missing += cov.get("missing_labels") or []
+        if missing:
+            out[channel] = missing
+    return out
+
+
+def _secondary_channels(
+    seed_note: str,
+    caption_values: List[str],
+    final_title: str,
+    final_content: str,
+    brand_kit: dict,
+    vendor: str,
+    notice_fields: dict,
+    product_fields: dict,
+    target_keywords: List[str],
+    progress: Progress,
+):
+    """Instagram / X / Shorts / Naver tags, audited, proofread and format-
+    checked. Returns (campaign fields, report entries).
+
+    Used by run_pipeline and regenerate_sns, so a regeneration after the body
+    was revised goes through exactly the same stages as the first run.
+    """
+    facts = _sns_facts(final_content, notice_fields, product_fields)
+
+    # The four writers are independent of each other, and each is 1~2
+    # sequential LLM round trips — run them concurrently so the slowest one,
+    # not the sum of all four, sets the wait. _safe keeps each one best-effort.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        ig_future = pool.submit(
+            _safe, progress, "인스타그램 캡션 생성 중…",
+            lambda: _guarded_instagram(
+                seed_note, caption_values, brand_kit, vendor, notice_fields, product_fields, facts
+            ),
+            {"caption": "", "hashtags": []},
+        )
+        x_future = pool.submit(
+            _safe, progress, "X 스레드 생성 중…",
+            lambda: _guarded_x(
+                seed_note, caption_values, brand_kit, vendor, notice_fields, product_fields, facts
+            ),
+            {"tweets": [], "hashtags": []},
+        )
+        shorts_future = pool.submit(
+            _safe, progress, "쇼츠 구성안 생성 중…",
+            lambda: _guarded_shorts(
+                seed_note, caption_values, brand_kit, vendor, notice_fields, product_fields, facts
+            ),
+            {"title": "", "hook": "", "scenes": [], "hashtags": []},
+        )
+        tags_future = pool.submit(
+            _safe, progress, "네이버 발행 태그 생성 중…",
+            lambda: write_naver_hashtags(final_title, final_content, brand_kit, vendor),
+            [],
+        )
+        instagram = ig_future.result()
+        x_result = x_future.result()
+        shorts = shorts_future.result()
+        naver_hashtags = tags_future.result()
+
+    _report(progress, "SNS 맞춤법·오탈자 교정 중…")
+    sns_proofread = _proofread_sns(instagram, x_result, shorts, brand_kit, vendor)
+
+    # --- platform format checks ---
+    # The writers are only *told* the limits. Verify: an over-long tweet is
+    # refused by X outright, which is a harder failure than any SEO miss.
+    _report(progress, "SNS 형식 검증 중…")
+    x_result["tweets"], x_issues = validate_tweets(x_result["tweets"])
+    instagram["caption"], instagram["hashtags"], ig_issues = validate_instagram(
+        instagram["caption"], instagram["hashtags"]
+    )
+    # 컴플라이언스 요약은 리포트 전용이라 DB 컬럼(shorts_script)에 들어가기 전에 떼어냅니다.
+    shorts_compliance = shorts.pop("compliance", None) or {"checked": False}
+    shorts, shorts_issues = validate_shorts(shorts)
+    naver_hashtags, tag_issues = validate_naver_tags(
+        naver_hashtags, list(target_keywords or []) + list(brand_kit.get("seo_keywords") or [])
+    )
+
+    fields = {
+        "instagram_caption": instagram["caption"],
+        "instagram_hashtags": instagram["hashtags"],
+        "x_content": x_result["tweets"],
+        "x_hashtags": x_result["hashtags"],
+        "naver_hashtags": naver_hashtags,
+        "shorts_script": shorts,
+    }
+    report = {
+        "sns_checks": {"x": x_issues, "instagram": ig_issues, "shorts": shorts_issues, "naver_tags": tag_issues},
+        # 형식 검증과는 별개입니다 — 이건 컴플라이언스 위반이 실제로 남아 있는지입니다.
+        "sns_compliance": {
+            "instagram": instagram.get("compliance") or {"checked": False},
+            "x": x_result.get("compliance") or {"checked": False},
+            "shorts": shorts_compliance,
+        },
+        "sns_proofread": sns_proofread,
+        "sns_fact_gaps": _sns_fact_coverage(instagram, x_result, notice_fields, product_fields),
+        "sns_stale": False,
+    }
+    return fields, report
+
+
+# Report entries that describe the SNS channels rather than the blog body —
+# carried over when only the body is revised (see revise_content).
+SNS_REPORT_KEYS = ("sns_checks", "sns_compliance", "sns_proofread", "sns_fact_gaps")
+
+
+def regenerate_sns(campaign_id: str, progress: Progress = None) -> Dict:
+    """Rebuilds Instagram / X / Shorts / Naver tags from the *current* body.
+
+    revise_content deliberately leaves the SNS channels alone (four LLM calls
+    for what is usually a wording change), and a body edited by hand never
+    touched them either — so after a price or date changed in the body the
+    channels kept the old one with nothing saying so. The body revision now
+    marks them stale, and this is the one-click way to bring them back in line.
+    """
+    previous_status = repo.begin_processing(campaign_id)
+    try:
+        vendor = get_configured_vendor()
+        campaign = repo.get_campaign(campaign_id)
+        brand_kit = repo.get_brand_kit()
+        report = dict(campaign.get("guardrail_report") or {})
+        content = campaign.get("content") or ""
+        title = (campaign.get("title") or "").strip() or "제목 미정"
+        if not content.strip():
+            raise RuntimeError("본문이 없습니다. 먼저 초안을 생성하세요.")
+
+        captions = caption_attachments(campaign.get("storage_file_paths") or [])
+        memo = (campaign.get("memo") or "").strip()
+        sns_fields, sns_report = _secondary_channels(
+            memo or title, list(captions.values()), title, content, brand_kit, vendor,
+            campaign.get("notice_fields") or {}, campaign.get("product_fields") or {},
+            report.get("seo_targets") or [], progress,
+        )
+        report.update(sns_report)
+        repo.update_campaign(
+            campaign_id,
+            status=previous_status if previous_status not in ("processing", "failed") else "draft",
+            publish_error=None,
+            guardrail_report=report,
+            **sns_fields,
+        )
+        _report(progress, "완료")
+        return repo.get_campaign(campaign_id)
+    except Exception as exc:
         repo.update_campaign(
             campaign_id,
             status=previous_status if previous_status != "processing" else "draft",
@@ -1044,12 +1255,13 @@ def _finalize_sns(guarded: dict, texts: List[str], hashtags: List[str], brand_ki
 def _guarded_instagram(
     note: str, caption_values: List[str], brand_kit: dict, vendor: str,
     notice_fields: Optional[dict] = None, product_fields: Optional[dict] = None,
+    facts: str = "",
 ) -> dict:
     """The caption goes through the same compliance guardrail as the Naver
     body — it's separately generated text making its own claims about the
     brand, not a derivative of the audited body, so skipping it would leave a
     real compliance gap."""
-    result = write_instagram_caption(note, caption_values, brand_kit, vendor)
+    result = write_instagram_caption(note, caption_values, brand_kit, vendor, facts)
     guarded = apply_guardrail_if_enabled(
         result["caption"], brand_kit, vendor, notice_fields, product_fields
     )
@@ -1066,6 +1278,7 @@ _TWEET_DELIMITER = "\n<<<TWEET>>>\n"
 def _guarded_x(
     note: str, caption_values: List[str], brand_kit: dict, vendor: str,
     notice_fields: Optional[dict] = None, product_fields: Optional[dict] = None,
+    facts: str = "",
 ) -> dict:
     """Same reasoning as the Instagram block: X gets its own generated text
     making brand claims, so it gets the same audit.
@@ -1079,7 +1292,7 @@ def _guarded_x(
     pass: the hard guarantee (no banned term survives) is preserved either
     way, and a mangled thread is worse than an unaudited-by-LLM one.
     """
-    result = write_x_thread(note, caption_values, brand_kit, vendor)
+    result = write_x_thread(note, caption_values, brand_kit, vendor, facts)
     tweets = result["tweets"]
     if not tweets or not brand_kit.get("guardrail_enabled", True):
         result["compliance"] = _compliance_summary({})
@@ -1117,6 +1330,7 @@ _SHORTS_DELIMITER = "\n<<<SEG>>>\n"
 def _guarded_shorts(
     note: str, caption_values: List[str], brand_kit: dict, vendor: str,
     notice_fields: Optional[dict] = None, product_fields: Optional[dict] = None,
+    facts: str = "",
 ) -> dict:
     """Same audit as Instagram/X, applied last — this channel had none at all.
 
@@ -1131,7 +1345,7 @@ def _guarded_shorts(
     a fallback to dictionary-only substitution if the model doesn't return
     the segments intact.
     """
-    result = write_shorts_script(note, caption_values, brand_kit, vendor)
+    result = write_shorts_script(note, caption_values, brand_kit, vendor, facts)
     scenes = result.get("scenes") or []
     segments = [result.get("title", ""), result.get("hook", "")] + [
         s.get("caption", "") for s in scenes

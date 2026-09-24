@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import flet as ft
 
+from ai_workers.sns_validator import IG_FOLD, IG_FOLD_LINES, instagram_preview
 from core import storage
 from flet_app.simulators.base import all_images
 
-TRUNCATE_LENGTH = 125
 MAX_CAROUSEL = 10
 
 
-def render(campaign: dict, username: str = "thestitch_artplay") -> ft.Control:
+def render(campaign: dict, username: str = "") -> ft.Control:
     caption = campaign.get("instagram_caption") or ""
     hashtags = campaign.get("instagram_hashtags") or []
     images = all_images(campaign.get("content") or "", campaign.get("storage_file_paths") or [])
@@ -46,8 +46,11 @@ def render(campaign: dict, username: str = "thestitch_artplay") -> ft.Control:
             margin=ft.Margin.symmetric(horizontal=12, vertical=4),
         )
 
-    if len(caption) > TRUNCATE_LENGTH:
-        head, tail = caption[:TRUNCATE_LENGTH], caption[TRUNCATE_LENGTH:]
+    # The fold comes from the same function the generation-time check uses,
+    # so the preview and the '훅이 잘린다' warning can't disagree.
+    head = instagram_preview(caption)
+    if caption and len(head) < len(caption):
+        tail = caption[len(head):]
         caption_block = ft.Column(
             [
                 ft.Text(
@@ -59,7 +62,7 @@ def render(campaign: dict, username: str = "thestitch_artplay") -> ft.Control:
                     size=13,
                 ),
                 ft.Container(
-                    content=ft.Text("▲ 여기까지만 노출됩니다 (125자)", size=10, color="#EE2A7B"),
+                    content=ft.Text(f"▲ 여기까지만 노출됩니다 (앞 {IG_FOLD}자·최대 {IG_FOLD_LINES}줄)", size=10, color="#EE2A7B"),
                     border=ft.Border(top=ft.BorderSide(1, "#EE2A7B")),
                     padding=ft.Padding.only(top=3),
                 ),

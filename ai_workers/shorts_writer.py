@@ -64,14 +64,24 @@ def _parse_response(raw: str, fallback_text: str) -> dict:
         return {"title": fallback_text[:40], "hook": "", "scenes": [], "hashtags": []}
 
 
-def write_shorts_script(note: str, photo_captions: List[str], brand_kit: dict, vendor: str) -> dict:
+def write_shorts_script(
+    note: str, photo_captions: List[str], brand_kit: dict, vendor: str, facts: str = ""
+) -> dict:
     """Returns {"title", "hook", "scenes": [{shot, caption}], "hashtags"}.
-    Best-effort, same as the other secondary channels."""
+    Best-effort, same as the other secondary channels.
+
+    `facts` is the confirmed-facts block and the finished (already audited)
+    blog body — see content_writer._sns_facts. Without it this writer saw only
+    the memo, so a date, price or article figure that lived in the notice
+    sheet or the news source never reached the SNS copy.
+    """
     context = "\n".join(f"- {c}" for c in photo_captions) if photo_captions else "(첨부된 사진 없음)"
     prompt = (
         f"[담당자가 작성한 메모]\n{note}\n\n"
         f"[촬영 소재로 쓸 수 있는 사진 설명]\n{context}"
     )
+    if facts:
+        prompt += "\n\n" + facts
     raw = generate_text(
         vendor=vendor,
         prompt=prompt,

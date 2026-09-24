@@ -27,6 +27,7 @@ from ai_workers.naver_publisher import (
     open_naver_login_session,
     split_publish_error,
 )
+from ai_workers.sns_validator import TWEET_HARD_MAX, x_weighted_length
 from core import repo
 
 from flet_app.components.collapsible import collapsible
@@ -71,7 +72,7 @@ def _fields_for_channel(page: ft.Page, scale: float, campaign: dict, channel: st
         controls = []
         tweets = campaign.get("x_content") or []
         for i, tweet in enumerate(tweets, start=1):
-            controls.append(_copy_field(f"트윗 {i}/{len(tweets)}", tweet, page, scale, f"{len(tweet)}자"))
+            controls.append(_copy_field(f"트윗 {i}/{len(tweets)}", tweet, page, scale, f"X 기준 {x_weighted_length(tweet)}/{TWEET_HARD_MAX}"))
         tags = campaign.get("x_hashtags") or []
         if tags:
             controls.append(_copy_field("해시태그", " ".join(tags), page, scale))
