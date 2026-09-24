@@ -425,7 +425,7 @@ def _build_api_hub_section(page: ft.Page, scale: float, rebuild) -> ft.Control:
                 id_field.update()
                 secret_field.update()
                 _refresh_stats()
-                # 아래 "키워드 갱신" 마법사의 버튼은 이 탭이 처음 그려질 때의
+                # 아래 "SEO 키워드 새로 고르기" 마법사의 버튼은 이 탭이 처음 그려질 때의
                 # keys_ok 값으로 disabled가 고정된다 — 여기서 키를 새로
                 # 저장해도 마법사 쪽엔 반영이 안 돼서, 등록 직후엔 다른
                 # 메뉴로 갔다 와야만 버튼이 눌리는 문제가 있었다. 저장에
@@ -552,7 +552,7 @@ def _build_searchad_section(page: ft.Page, scale: float, rebuild) -> ft.Control:
                 cid_field.update()
                 key_field.update()
                 secret_field.update()
-                # 아래 "키워드 갱신" 마법사의 버튼은 이 탭이 처음 그려질 때의
+                # 아래 "SEO 키워드 새로 고르기" 마법사의 버튼은 이 탭이 처음 그려질 때의
                 # keys_ok 값으로 disabled가 고정된다 — 여기서 키를 새로
                 # 저장해도 마법사 쪽엔 반영이 안 돼서, 등록 직후엔 다른
                 # 메뉴로 갔다 와야만 버튼이 눌리는 문제가 있었다. 저장에
@@ -612,17 +612,18 @@ def _build_sweep_wizard(page: ft.Page, scale: float, rebuild) -> ft.Control:
     if not keys_ok:
         controls.append(_warn_box("위에서 두 API 키를 모두 등록하면 아래 버튼이 활성화됩니다.", scale))
 
+    maintain: list[ft.Control] = []
     if not pool:
-        controls.append(ft.Text("브랜드 킷에 SEO 키워드가 없습니다. 아래 갱신을 한 번 돌리면 채워집니다.", size=fs(12, scale)))
+        maintain.append(ft.Text("아직 SEO 키워드가 없습니다. 위 [🔑 SEO 키워드 새로 고르기]를 먼저 끝까지(4단계 적용) 진행하세요.", size=fs(12, scale)))
     else:
         freshness = keyword_research.pool_freshness(pool)
         if freshness["stale"]:
-            controls.append(_warn_box(
-                f"📉 경쟁도 만료 {len(freshness['stale'])}/{len(pool)}개 — 아래 [숫자만 새로 재기]를 눌러주세요.",
+            maintain.append(_warn_box(
+                f"📉 경쟁도 만료 {len(freshness['stale'])}/{len(pool)}개 — 아래 [🔄 숫자만 새로 재기]를 눌러주세요.",
                 scale, color="#B3261E", bg="#FDECEA",
             ))
         else:
-            controls.append(ft.Text(
+            maintain.append(ft.Text(
                 f"✅ 키워드 {len(pool)}개 모두 측정돼 있습니다 · "
                 f"{freshness['newest_document_age']:.0f}일 전 측정 · {freshness['days_left']:.0f}일 후 만료",
                 size=fs(12, scale), color="#1B6E3C",
@@ -660,9 +661,8 @@ def _build_sweep_wizard(page: ft.Page, scale: float, rebuild) -> ft.Control:
             on_click=on_refresh,
             disabled=(not need) or (not keys_ok),
         )
-        controls.append(ft.Row([refresh_button, refresh_status]))
+        maintain.append(ft.Row([refresh_button, refresh_status]))
 
-    controls.append(ft.Divider())
 
     seed_field = ft.TextField(
         label="씨앗 키워드 (쉼표로 최대 5개)",
@@ -1020,7 +1020,36 @@ def _build_sweep_wizard(page: ft.Page, scale: float, rebuild) -> ft.Control:
             ]))
             controls.append(apply_status)
 
-    return ft.Column(controls, spacing=8)
+    # 두 기능을 제목부터 나눕니다. 예전엔 둘이 "키워드 갱신" 한 제목 아래 있었고
+    # [숫자만 새로 재기]가 1~4단계 위에 놓여 있어서, "갱신"이 1~4단계와 별개의
+    # (앞이나 뒤에 하는) 작업처럼 읽혔습니다. 실제로는 4단계 [적용]이 곧 SEO
+    # 키워드 갱신이고, 숫자 재기는 목록을 건드리지 않는 유지 작업입니다.
+    pick = ft.Column(
+        [
+            ft.Text("🔑 SEO 키워드 새로 고르기 (추천 → 1~4단계)", weight=ft.FontWeight.BOLD, size=fs(16, scale)),
+            ft.Text(
+                "브랜드 킷의 SEO 키워드를 바꾸는 곳은 여기 하나뿐입니다. 4단계 [✅ 적용]을 눌러야 "
+                "바뀌고, 적용하면서 새 키워드의 수치도 함께 측정하므로 따로 할 일은 없습니다. "
+                "처음 한 번, 그리고 사업 방향이 바뀌거나 몇 달에 한 번 새 검색어를 반영하고 싶을 때 돌리세요.",
+                size=fs(12, scale), color=BRAND_COLORS["text_muted"],
+            ),
+            *controls,
+        ],
+        spacing=8,
+    )
+    keep = ft.Column(
+        [
+            ft.Text("🔄 현재 키워드 수치 유지 (30일마다)", weight=ft.FontWeight.BOLD, size=fs(16, scale)),
+            ft.Text(
+                "키워드 목록은 그대로 두고 검색량·경쟁도 숫자만 다시 잽니다. 측정값은 30일 동안만 유효하고, "
+                "만료되면 글마다 타깃 키워드를 고르는 점수가 0으로 계산됩니다. 만료 경고가 뜰 때 누르세요.",
+                size=fs(12, scale), color=BRAND_COLORS["text_muted"],
+            ),
+            *maintain,
+        ],
+        spacing=8,
+    )
+    return ft.Column([pick, ft.Divider(), keep], spacing=12)
 
 
 def _build_keyword_diagnostic_section(page: ft.Page, scale: float) -> ft.Control:
@@ -1105,11 +1134,6 @@ def _build_naver_tab(page: ft.Page, scale: float) -> ft.Control:
             ft.Divider(),
             _build_searchad_section(page, scale, rebuild),
             ft.Divider(),
-            ft.Text("🔑 키워드 갱신", weight=ft.FontWeight.BOLD, size=fs(16, scale)),
-            ft.Text(
-                "SEO 키워드를 바꾸는 곳은 여기 하나뿐입니다. 승인하기 전에는 아무것도 바뀌지 않습니다.",
-                size=fs(12, scale), color=BRAND_COLORS["text_muted"],
-            ),
             wizard_box,
             ft.Divider(),
             _build_keyword_diagnostic_section(page, scale),
