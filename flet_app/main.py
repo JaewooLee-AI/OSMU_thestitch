@@ -37,10 +37,21 @@ if str(PROJECT_ROOT) not in sys.path:
 # ENCRYPTION_MASTER_KEY_BASE64. Without this, a master key moved into .env
 # (as HANDOFF.md recommends) was invisible to this app, which then generated a
 # fresh key and could no longer decrypt any stored API key.
+#
+# Explicit paths only. A bare load_dotenv() makes python-dotenv search from the
+# *calling file*, found by walking the stack for a frame whose file exists on
+# disk; inside the packaged exe every frame is virtual (e.g. '<sp_script>'),
+# the walk runs off the top of the stack, and it dies on an internal assert —
+# the exe crashed at startup. And .env is optional, so nothing about loading
+# it is allowed to stop the app.
 from dotenv import load_dotenv  # noqa: E402
 
-load_dotenv(PROJECT_ROOT / ".env")
-load_dotenv()  # CWD .env too, for `flet run` from elsewhere; never overrides the above
+for _env_path in (PROJECT_ROOT / ".env", Path.cwd() / ".env"):
+    try:
+        if _env_path.is_file():
+            load_dotenv(_env_path)  # the first file found wins; never overrides
+    except Exception as _exc:  # noqa: BLE001
+        print(f"[main] .env 로드 건너뜀 ({_env_path}): {_exc}")
 
 from core import repo  # noqa: E402
 from core.brand_seed import apply_seed_fixes, seed_if_empty  # noqa: E402
