@@ -336,7 +336,7 @@ rows = [
     ("📰 뉴스 큐레이션", "브랜드 키워드로 뉴스 검색 → 워크벤치로 전달 (무료, API 키 불필요)"),
     ("🧵 브랜드 킷", "페르소나·톤앤매너·핵심 팩트·용어집·SEO 키워드·금기어 사전"),
     ("🚀 네이버 게시", "반자동 게시(로그인 세션) · 수동 완료 처리 · 채널별 콘텐츠 조회"),
-    ("⚙️ 설정 · 토큰", "LLM 벤더, 네이버 API 키 2종, 키워드 갱신, 사용량 — Part 2에서 상세히"),
+    ("⚙️ 설정 · 토큰", "LLM 벤더, 네이버 API 키 2종, SEO 키워드 새로 고르기·수치 유지, 사용량 — Part 2에서 상세히"),
 ]
 tbl = s.shapes.add_table(len(rows), 2, Inches(0.55), Inches(1.55), Inches(12.2), Inches(3.9)).table
 for r, row in enumerate(rows):
@@ -554,11 +554,11 @@ add_text(s, Inches(0.85), Inches(5.75), Inches(11.6), Inches(0.8),
           "몇 번을 눌러도 과금되지 않습니다. 비용이 발생하는 지점은 오직 ①(경쟁도 조사)뿐입니다.",
           size=12.5, color=SECONDARY, bold=True, line_spacing=1.3)
 
-# ---- 두 API가 함께 도는 곳: 키워드 갱신 파이프라인 ----
+# ---- 두 API가 함께 도는 곳: SEO 키워드 새로 고르기 파이프라인 ----
 s = new_slide()
-header_bar(s, "PART 2 · 네이버 API", "두 API가 함께 도는 곳 — 키워드 갱신", accent=SECONDARY)
+header_bar(s, "PART 2 · 네이버 API", "두 API가 함께 도는 곳 — SEO 키워드 새로 고르기", accent=SECONDARY)
 add_text(s, Inches(0.55), Inches(1.4), Inches(12.2), Inches(0.4),
-          "⚙️ 설정 → 키워드 갱신의 4단계 각각이 어느 API를 쓰는지 표시했습니다.", size=13, color=TEXT_MUTED)
+          "⚙️ 설정 → 🔑 SEO 키워드 새로 고르기의 4단계 각각이 어느 API를 쓰는지 표시했습니다. 4단계 [적용]이 곧 브랜드 킷 SEO 키워드 교체입니다.", size=13, color=TEXT_MUTED)
 steps5 = [
     ("1. 후보 찾기", FREE_TAG, "검색광고 API", "씨앗 키워드로 연관검색어를 대량 발굴, 검색량 구간으로 필터링"),
     ("2. 경쟁도 조사", PAID_TAG, "NAVER API HUB", "후보마다 블로그 문서 수를 세어 '얼마나 치열한지' 측정 — 유일하게 비용이 드는 단계"),
@@ -600,7 +600,7 @@ header_bar(s, "PART 2 · 네이버 API", "자주 겪는 문제", accent=SECONDAR
 faqs = [
     ("\"요청한 API가 이 Application에서 활성화되어 있지 않습니다\"", "NAVER API HUB 콘솔 → 해당 Application > [Application 수정]에서 검색·Data Lab을 체크하세요."),
     ("검색광고 API 사용 관리에 키가 안 보임", "계정 책임자(마스터) 계정으로 로그인했는지, 서비스 신청(4단계)을 먼저 완료했는지 확인하세요."),
-    ("'경쟁도 측정이 만료' 경고가 뜸", "⚙️ 설정 → 키워드 갱신 → [🔄 숫자만 새로 재기]를 누르세요. 캐시가 살아있는 값은 재과금되지 않습니다."),
+    ("'경쟁도 측정이 만료' 경고가 뜸", "⚙️ 설정 → 🔄 키워드 수치 유지 → [🔄 숫자만 새로 재기]를 누르세요. 캐시가 살아있는 값은 재과금되지 않습니다."),
     ("오늘 호출 상한을 넘었다는 메시지", "정상 동작입니다 — 청구 방지를 위한 방어선입니다. 다음 날 자동으로 초기화되거나, ⚙️ 설정에서 일일 상한을 올릴 수 있습니다."),
     ("developers.naver.com에서 발급받은 키를 넣었는데 실패", "그 키는 이 앱과 호환되지 않습니다 (인증 헤더가 다른 별개 서비스). console.ncloud.com에서 새로 발급하세요."),
 ]
@@ -724,6 +724,6 @@ add_bullets(s, Inches(0.9), Inches(4.15), Inches(11.2), Inches(2.2), [
     (0, "views/06_settings.py — 이 문서의 네이버 API 설명이 나온 실제 화면 코드", False),
 ], size=15, color=RGBColor(0xF0, 0xE3, 0xE8), space_after=14, muted=RGBColor(0xD8, 0xC6, 0xCE))
 
-out_path = "/Users/jwlee/project/OSMU_thestitch/docs/OSMU_사용자_가이드.pptx"
+out_path = "docs/OSMU_사용자_가이드.pptx"  # 저장소 루트에서 실행
 prs.save(out_path)
 print("Saved:", out_path, "| slides:", len(prs.slides._sldIdLst))
