@@ -10,6 +10,7 @@ the NAVER API HUB news endpoint as a fallback when a key is registered in
 """
 from __future__ import annotations
 
+import re
 import urllib.parse
 
 import feedparser
@@ -141,7 +142,13 @@ def _naver_news_api(keyword: str, max_results: int) -> list[dict]:
         return []
 
     def _plain(markup: str) -> str:
-        return BeautifulSoup(markup or "", "html.parser").get_text(strip=True)
+        # get_text(strip=True) with no separator joins adjacent text nodes
+        # with nothing between them. Naver wraps the matched query in <b>,
+        # e.g. "가발 <b>탈모</b> 극복" — the space sits right against that tag,
+        # so strip=True alone glued it to "가발탈모극복", losing the word
+        # boundary on both sides of every highlighted term.
+        text = BeautifulSoup(markup or "", "html.parser").get_text(" ", strip=True)
+        return re.sub(r"\s+", " ", text).strip()
 
     articles = []
     for item in payload.get("items") or []:
