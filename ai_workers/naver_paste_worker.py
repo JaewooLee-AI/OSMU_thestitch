@@ -693,13 +693,25 @@ def _run(campaign_id: str, on_status: Callable[[str], None]) -> None:
                 # used to give up after 5 minutes and close the window itself
                 # — taking an unpublished, possibly half-reviewed post with it
                 # if the review took longer than that.
+                #
+                # The wait must go through Playwright (page.wait_for_timeout),
+                # not time.sleep: the sync API only processes browser events
+                # while a Playwright call is in progress, so with time.sleep
+                # the "page closed" event was never delivered. Closing the
+                # window then left page.is_closed() False forever — the run
+                # never ended, a hidden Chrome process stayed alive, and the
+                # campaign's [지금 게시]/[다시 게시] stayed disabled until the
+                # app was restarted (reproduced on Windows by closing the
+                # window with its X button). Once the page is gone,
+                # wait_for_timeout raises TargetClosedError, which ends the
+                # wait just as well.
                 while True:
                     try:
                         if page.is_closed() or not browser.is_connected() or len(context.pages) == 0:
                             break
+                        page.wait_for_timeout(1000)
                     except Exception:
                         break
-                    time.sleep(1)
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
             message = format_publish_error(exc)

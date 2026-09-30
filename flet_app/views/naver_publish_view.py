@@ -186,11 +186,20 @@ def _build_card(
                 except Exception as exc:  # noqa: BLE001
                     on_status(f"❌ 게시 실패: {exc}")
                 finally:
-                    publish_button.disabled = False
+                    # 버튼 하나만 다시 켜지 말고 화면을 통째로 다시 그린다. 게시 중에
+                    # 아래 폴링이 DB 변화를 보고 카드를 새로 그렸다면, 여기서 잡고 있는
+                    # publish_button은 이미 화면에서 빠진 옛 버튼이다 — 그걸 켜 봐야
+                    # 화면의 (게시 중에 꺼진 채로 만들어진) 새 버튼은 계속 꺼져 있었다.
+                    # run()은 돌아오기 전에 진행 중 표시를 지우므로, 다시 그리면
+                    # is_running()이 False로 읽혀 버튼이 켜진다.
                     try:
-                        publish_button.update()
-                    except Exception:  # noqa: BLE001
-                        pass
+                        refresh_all()
+                    except Exception:  # noqa: BLE001 — 다른 메뉴로 떠나 화면이 없으면 무시
+                        publish_button.disabled = False
+                        try:
+                            publish_button.update()
+                        except Exception:  # noqa: BLE001
+                            pass
 
             page.run_thread(_work)
 
