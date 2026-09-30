@@ -59,9 +59,14 @@ jobs:
         # flet_app/pyproject.toml을 pip install하지 않고 의존성을 그대로
         # 나열한다 — 그 파일은 정식 패키징 레이아웃(빌드 백엔드 지정 등)이
         # 아니라서 `pip install .`이 실패할 위험이 있다 (spike와 같은 근거).
+        #
+        # flet은 버전을 고정한다. 2026-09-30 flet 1.0.3이 PyPI에 먼저 올라오고
+        # flet-cli 1.0.3은 아직 없어서, `flet build`가 같은 버전의 CLI를 설치하지
+        # 못해 빌드가 실패했다. 올릴 때는 flet·flet-cli·flet-desktop이 모두 그
+        # 버전으로 올라와 있는지 PyPI에서 확인하고 바꾼다.
         run: |
           python -m pip install --upgrade pip
-          pip install flet python-dotenv cryptography openai anthropic google-genai `
+          pip install flet==1.0.2 python-dotenv cryptography openai anthropic google-genai `
             requests beautifulsoup4 feedparser playwright pyperclip Pillow pywin32
 
       - name: Download Playwright's Chromium fallback + driver
