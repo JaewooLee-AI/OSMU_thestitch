@@ -29,6 +29,15 @@ on:
       - ".github/workflows/flet-windows-build.yml"
   workflow_dispatch:
 
+# 릴리스 생성(아래 Publish GitHub Release 스텝)에 필요한 권한.
+permissions:
+  contents: write
+
+# 같은 브랜치에 연달아 푸시하면 이전 빌드는 취소하고 최신 커밋만 배포한다.
+concurrency:
+  group: flet-windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # 없으면 flet build의 rich-console 진행 표시가 체크마크 이모지를 Windows
   # 러너 기본 cp1252 콘솔 코드페이지로 출력하려다 UnicodeEncodeError로
@@ -40,9 +49,9 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -109,8 +118,35 @@ jobs:
 
       - name: Upload build artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: osmu-thestitch-windows-build
           path: stage/build/windows
           if-no-files-found: warn
+
+      # --- 자동 배포 ---------------------------------------------------------
+      # main에 푸시될 때마다 빌드된 앱 폴더를 zip으로 묶어 GitHub Releases에
+      # 올린다. Actions 아티팩트는 로그인해야 받을 수 있고 90일 뒤 사라지지만,
+      # 릴리스는 저장소의 Releases 페이지에서 누구나 바로 내려받을 수 있다.
+      # 가장 최근 릴리스가 'Latest'로 표시되므로 담당자는 항상
+      # https://github.com/<owner>/<repo>/releases/latest 에서 받으면 된다.
+      - name: Package release zip
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        run: |
+          $version = "v0.1.${{ github.run_number }}"
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Compress-Archive -Path "stage/build/windows/*" -DestinationPath "OSMU-thestitch-windows-$version.zip"
+
+      - name: Publish GitHub Release
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$VERSION" "OSMU-thestitch-windows-$VERSION.zip" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "더스티치 OSMU 워크벤치 $VERSION" \
+            --notes "커밋 ${GITHUB_SHA::7} 자동 빌드. zip을 풀고 폴더 안의 .exe를 실행하세요. 첫 실행 후 ⚙️ 설정에서 LLM API 키를 등록해야 합니다." \
+            --latest

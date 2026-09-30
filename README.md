@@ -22,6 +22,17 @@ python flet_app/main.py
 
 Windows용 .exe는 GitHub Actions(`.github/workflows/flet-windows-build.yml`)가 빌드합니다.
 
+### 자동 배포 (설치 파일 받기)
+
+`main`에 앱 코드(`flet_app/`, `core/`, `ai_workers/`)가 바뀐 커밋을 푸시하면 Actions가 Windows 앱을 빌드해
+**GitHub Releases**에 `OSMU-thestitch-windows-v0.1.N.zip`으로 자동 게시합니다.
+담당자는 항상 아래 주소에서 최신 버전을 받아 zip을 풀고 `.exe`를 실행하면 됩니다.
+
+https://github.com/JaewooLee-AI/OSMU_thestitch/releases/latest
+
+코드 변경 없이 다시 빌드하려면 GitHub의 Actions 탭 → `flet-windows-build` → **Run workflow**를 누르세요.
+사용자 데이터(DB·API 키)는 `%APPDATA%\OSMU_THESTITCH`에 있어 새 버전으로 바꿔도 그대로 유지됩니다.
+
 첫 실행 시 `data/osmu.db`가 만들어지고, `company_info/`에서 정리한 브랜드 킷이 자동으로 채워집니다.
 그다음 **⚙️ 설정 → LLM 벤더**에서 API 키를 하나 이상 등록하고 [기본 생성 모델]을 지정하면 바로 사용할 수 있습니다.
 
