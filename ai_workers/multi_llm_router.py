@@ -157,6 +157,35 @@ _TRUNCATION_RETRY_FACTOR = 2
 # on top so the caller's ceiling still bounds the *visible* text.
 _REASONING_HEADROOM = 8192
 
+# Transient-error retries for Gemini. The OpenAI and Anthropic SDKs already
+# retry 429/5xx (and Anthropic's 529 overloaded) twice by default; google-genai
+# retries *nothing* unless retry_options is set. A "503 UNAVAILABLE — high
+# demand" rejection therefore failed the Instagram caption outright while the
+# same request a few seconds later would have gone through. The SDK's own
+# default status list (408/429/500/502/503/504) is used; waits grow
+# 2s → 4s → 8s (+jitter, capped at 20s), about 15s at worst before giving up.
+_GOOGLE_RETRY_ATTEMPTS = 4  # including the first call
+_GOOGLE_RETRY_INITIAL_DELAY = 2.0
+_GOOGLE_RETRY_MAX_DELAY = 20.0
+
+
+def google_client(api_key: str):
+    """A google-genai client that retries transient server errors. Every
+    Gemini call site (text, embeddings, vision) builds its client here."""
+    from google import genai
+    from google.genai import types
+
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(
+            retry_options=types.HttpRetryOptions(
+                attempts=_GOOGLE_RETRY_ATTEMPTS,
+                initial_delay=_GOOGLE_RETRY_INITIAL_DELAY,
+                max_delay=_GOOGLE_RETRY_MAX_DELAY,
+            )
+        ),
+    )
+
 
 def _is_openai_reasoning_model(model_name: str) -> bool:
     return (model_name or "").lower().startswith(("o1", "o3", "o4", "gpt-5"))
@@ -214,10 +243,9 @@ def _call_anthropic(model_name, api_key, prompt, system, max_tokens):
 
 
 def _call_google(model_name, api_key, prompt, system, max_tokens):
-    from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=api_key)
+    client = google_client(api_key)
 
     def _config(thinking_off: bool):
         # Without an explicit config, generate_content ignores max_tokens
@@ -341,10 +369,9 @@ def generate_embedding(vendor: str, text: str) -> list:
 
     if vendor == "google":
         _model, api_key = load_vendor_config("google")
-        from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=api_key)
+        client = google_client(api_key)
         res = client.models.embed_content(
             model="gemini-embedding-001",
             contents=text,

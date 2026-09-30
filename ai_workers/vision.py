@@ -47,7 +47,7 @@ from typing import Dict, List, Optional, Tuple
 
 from PIL import Image
 
-from ai_workers.multi_llm_router import get_vision_vendor, load_vendor_config
+from ai_workers.multi_llm_router import get_vision_vendor, google_client, load_vendor_config
 from core import repo, storage
 
 # Bump when CAPTION_PROMPT changes semantically — old cache entries then stop
@@ -191,10 +191,9 @@ def _parse_captions(raw: str, expected: int) -> Tuple[List[str], bool]:
 # --- per-vendor batched vision call ----------------------------------------
 
 def _call_google(model: str, api_key: str, images: List[bytes], max_tokens: int) -> Tuple[str, int, int]:
-    from google import genai
     from google.genai import types
 
-    client = genai.Client(api_key=api_key)
+    client = google_client(api_key)
     parts = [types.Part.from_bytes(data=b, mime_type="image/jpeg") for b in images]
     parts.append(types.Part.from_text(text=_numbered_prompt(len(images))))
 

@@ -935,6 +935,15 @@ def revise_content(
 # with it, not reproduce it.
 SNS_BODY_EXCERPT = 2000
 
+# How many of the four SNS writers (Instagram / X / Shorts / Naver tags) run at
+# once. Each writer is a generation call plus a compliance-audit call, so all
+# four at once put a burst of ~8 requests on the provider within seconds —
+# and under load Gemini answers a burst with "503 UNAVAILABLE — high demand",
+# which is how the Instagram caption failed while the (sequential) Naver body
+# succeeded. Two at a time roughly halves the burst for a somewhat longer
+# wait; the per-call retry in multi_llm_router.google_client covers the rest.
+SNS_CONCURRENCY = 2
+
 _SNS_SEGMENT = "\n<<<SEG>>>\n"
 
 
@@ -1043,9 +1052,10 @@ def _secondary_channels(
     facts = _sns_facts(final_content, notice_fields, product_fields)
 
     # The four writers are independent of each other, and each is 1~2
-    # sequential LLM round trips — run them concurrently so the slowest one,
-    # not the sum of all four, sets the wait. _safe keeps each one best-effort.
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    # sequential LLM round trips — run them concurrently so the slowest ones,
+    # not the sum of all four, set the wait. _safe keeps each one best-effort.
+    # Capped at SNS_CONCURRENCY rather than all four at once — see there.
+    with ThreadPoolExecutor(max_workers=SNS_CONCURRENCY) as pool:
         ig_future = pool.submit(
             _safe, progress, "인스타그램 캡션 생성 중…",
             lambda: _guarded_instagram(
