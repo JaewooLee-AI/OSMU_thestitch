@@ -370,9 +370,11 @@ y = Inches(1.5)
 for i, (t, d) in enumerate(steps, start=1):
     step_box(s, Inches(0.55), y, Inches(12.2), Inches(1.15), i, t, d)
     y += Inches(1.25)
-add_text(s, Inches(0.55), Inches(6.5), Inches(12.2), Inches(0.5),
-          "생성 후 4개 탭(네이버/인스타/X/쇼츠)에서 직접 편집·복사할 수 있고, 우측 시뮬레이터로 실제 레이아웃을 미리 봅니다.",
-          size=12, color=TEXT_MUTED)
+add_text(s, Inches(0.55), Inches(6.5), Inches(12.2), Inches(0.7),
+          "생성 후 4개 탭(네이버/인스타/X/쇼츠)에서 직접 편집·복사할 수 있고, 우측 시뮬레이터로 실제 레이아웃을 미리 봅니다.\n"
+          "인스타·X·쇼츠·발행 태그는 길이·해시태그·인증 표현을 생성 직후 자동으로 점검·정리하며, 본문을 고치면 "
+          "[📣 SNS 3채널 다시 만들기]로 최신 내용에 맞춰 다시 만들 수 있습니다.",
+          size=12, color=TEXT_MUTED, line_spacing=1.2)
 
 # ---- 뉴스 큐레이션 + 네이버 게시 ----
 s = new_slide()
@@ -380,7 +382,8 @@ header_bar(s, "PART 1 · 일반 사용법", "뉴스 큐레이션 & 네이버 게
 add_text(s, Inches(0.55), Inches(1.4), Inches(5.9), Inches(0.4), "📰 뉴스 큐레이션", size=15, color=PRIMARY, bold=True)
 add_bullets(s, Inches(0.55), Inches(1.85), Inches(5.9), Inches(2.8), [
     (0, "브랜드 키워드로 관련 기사를 찾아 워크벤치로 전달합니다.", False),
-    (0, "Google 뉴스 RSS + 네이버 뉴스 검색 결과 페이지를 직접 조회합니다 — API 키가 필요 없고 완전 무료입니다.", True),
+    (0, "Google 뉴스 RSS + 네이버 뉴스 검색 결과 페이지를 직접 조회가 기본이며 API 키가 필요 없습니다. "
+        "조회가 막히면 등록된 네이버 API HUB 키로 자동 전환됩니다(유료, 오늘 호출에 집계).", True),
     (0, "뉴스 기반 글은 편집 방침상 본문 끝에 원문 링크가 자동으로 붙습니다.", False),
 ], size=12.5, space_after=10, line_spacing=1.25)
 
@@ -408,11 +411,11 @@ section_divider("PART 2", "설정 완전정복 — 네이버 API",
 s = new_slide()
 header_bar(s, "PART 2 · 네이버 API", "먼저, 이 앱이 네이버와 왜 통신하나요", accent=SECONDARY)
 add_text(s, Inches(0.55), Inches(1.4), Inches(12.2), Inches(0.5),
-          "이 앱에서 '네이버'와 관련된 기능은 셋입니다 — 이 중 API 키가 필요한 것은 하나뿐입니다.",
+          "이 앱에서 '네이버'와 관련된 기능은 셋입니다 — 이 중 API 키 등록이 필수인 것은 하나뿐입니다.",
           size=13.5, color=TEXT_MUTED)
 rows3 = [
     ("기능", "무엇을 하나", "API 키 필요?"),
-    ("📰 뉴스 큐레이션", "네이버 뉴스 검색 결과 페이지를 직접 조회 (스크래핑)", "❌ 불필요 · 완전 무료"),
+    ("📰 뉴스 큐레이션", "네이버 뉴스 검색 결과 페이지를 직접 조회 (스크래핑)", "⚠️ 보통 불필요 · 막히면 유료 전환"),
     ("🚀 네이버 게시", "로그인 세션으로 브라우저를 자동 조작해 글을 입력 (Playwright)", "❌ 불필요 · 세션 쿠키만 사용"),
     ("🔑 키워드 조사·경쟁도 분석", "네이버가 공식 제공하는 데이터 API로 검색량·경쟁 문서 수를 조회", "✅ 필요 · 이번 파트의 주제"),
 ]
