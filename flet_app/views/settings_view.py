@@ -1028,7 +1028,7 @@ def _build_sweep_wizard(page: ft.Page, scale: float, rebuild) -> ft.Control:
         [
             ft.Text("🔑 SEO 키워드 새로 고르기 (추천 → 1~4단계)", weight=ft.FontWeight.BOLD, size=fs(16, scale)),
             ft.Text(
-                "브랜드 킷의 SEO 키워드를 바꾸는 곳은 여기 하나뿐입니다. 4단계 [✅ 적용]을 눌러야 "
+                "브랜드 킷의 SEO 키워드 전체를 새로 정하는 곳입니다. 4단계 [✅ 적용]을 눌러야 "
                 "바뀌고, 적용하면서 새 키워드의 수치도 함께 측정하므로 따로 할 일은 없습니다. "
                 "처음 한 번, 그리고 사업 방향이 바뀌거나 몇 달에 한 번 새 검색어를 반영하고 싶을 때 돌리세요.",
                 size=fs(12, scale), color=BRAND_COLORS["text_muted"],
@@ -1049,7 +1049,200 @@ def _build_sweep_wizard(page: ft.Page, scale: float, rebuild) -> ft.Control:
         ],
         spacing=8,
     )
-    return ft.Column([pick, ft.Divider(), keep], spacing=12)
+    add = _build_category_adder(page, scale, rebuild, keys_ok, pool)
+    return ft.Column([pick, ft.Divider(), add, ft.Divider(), keep], spacing=12)
+
+
+def _build_category_adder(page: ft.Page, scale: float, rebuild, keys_ok: bool, pool: list[str]) -> ft.Control:
+    state = repo.get_app_state("category_sweep") or {}
+    stage = state.get("stage", 0)
+    status = ft.Text("", size=fs(12, scale), color="#B3261E")
+
+    def _busy(button: ft.Control, text: str) -> None:
+        button.disabled = True
+        button.update()
+        status.value = text
+        status.color = BRAND_COLORS["text_muted"]
+        status.update()
+
+    def _fail(button: ft.Control, exc: Exception) -> None:
+        status.value = f"❌ {exc}"
+        status.color = "#B3261E"
+        button.disabled = not keys_ok
+        status.update()
+        button.update()
+
+    category_field = ft.TextField(
+        label="추가할 사업 분야",
+        value=state.get("category", ""),
+        hint_text="예: 교육, 체험 수업, 기업 강의, 단체 주문",
+        expand=True,
+    )
+
+    def on_find(e: ft.Event) -> None:
+        category = (category_field.value or "").strip()
+        if not category:
+            status.value = "분야 이름을 적어주세요. 평소 부르는 말 그대로면 됩니다 (예: 교육)."
+            status.update()
+            return
+        _busy(find_button, f"⏳ '{category}' 분야 검색어를 만들고 후보를 고르는 중…")
+
+        def _work() -> None:
+            try:
+                found = keyword_curator.find_category_candidates(category, current=pool)
+            except Exception as exc:  # noqa: BLE001
+                _fail(find_button, exc)
+                return
+            repo.set_app_state("category_sweep", {"stage": 1, **found})
+            rebuild()
+
+        page.run_thread(_work)
+
+    find_button = ft.FilledButton("🔎 이 분야 후보 찾기 (검색 무료)", on_click=on_find, disabled=not keys_ok)
+
+    controls: list[ft.Control] = [
+        ft.Text("➕ 사업 분야 추가 (기존 키워드는 그대로)", weight=ft.FontWeight.BOLD, size=fs(16, scale)),
+        ft.Text(
+            "교육·체험처럼 검색량이 작은 분야는 위의 [새로 고르기]에서 주력 상품에 밀려 빠집니다. "
+            "분야 이름만 적으면 AI가 그 분야 고객이 실제로 검색하는 말로 바꿔 후보를 찾고, "
+            f"그 분야 안에서만 비교해 최대 {keyword_curator.CATEGORY_KEYWORD_LIMIT}개를 기존 키워드에 더합니다. "
+            "전환 가중치와 측정도 자동으로 처리됩니다.",
+            size=fs(12, scale), color=BRAND_COLORS["text_muted"],
+        ),
+        _warn_box(
+            "분야가 많아질수록 블로그 주제가 흩어져 네이버 노출 점수가 약해질 수 있습니다. "
+            "실제로 글을 꾸준히 쓸 분야만 추가하세요.",
+            scale,
+        ),
+    ]
+    if not pool:
+        controls.append(ft.Text(
+            "먼저 위 [🔑 SEO 키워드 새로 고르기]로 주력 키워드를 정한 뒤 분야를 더하세요.",
+            size=fs(12, scale),
+        ))
+        return ft.Column(controls, spacing=8)
+
+    controls += [ft.Row([category_field, find_button]), status]
+    if state.get("done"):
+        controls.append(ft.Text(state["done"], size=fs(12, scale), color="#1B6E3C"))
+
+    def on_discard(e: ft.Event) -> None:
+        repo.clear_app_state("category_sweep")
+        rebuild()
+
+    relevant = state.get("relevant")
+    if stage >= 1 and relevant is not None:
+        controls.append(ft.Text(
+            f"AI가 만든 검색어: {', '.join(state.get('seeds') or [])} → 연관 후보 {state.get('found', 0)}개 중 "
+            f"'{state.get('category')}' 분야에 맞는 것 {len(relevant)}개",
+            size=fs(12, scale),
+        ))
+        if not relevant:
+            controls.append(_warn_box(
+                "이 분야에 맞는 후보가 없습니다. 분야 이름을 바꿔 보시고(예: '교육' → '체험 수업'), "
+                "그래도 없으면 🧵 브랜드 킷의 핵심 사실에 이 분야에서 실제로 하는 일을 한두 줄 적어주세요. "
+                "AI는 핵심 사실을 보고 검색어를 만듭니다.",
+                scale,
+            ))
+            controls.append(ft.OutlinedButton("처음부터 다시", on_click=on_discard))
+        elif stage == 1:
+            for r in sorted(relevant, key=lambda r: r.get("volume") or 0, reverse=True):
+                controls.append(ft.Text(
+                    f"· {r['keyword']}  월 {r.get('volume', 0):,}회  {r.get('reason', '')}", size=fs(11, scale)
+                ))
+            cost = keyword_curator.category_score_cost(relevant)
+
+            def on_score(e: ft.Event) -> None:
+                _busy(score_button, "⏳ 경쟁도를 조사하고 고르는 중…")
+
+                def _work() -> None:
+                    try:
+                        proposal = keyword_curator.propose_category(relevant)
+                    except Exception as exc:  # noqa: BLE001
+                        _fail(score_button, exc)
+                        return
+                    repo.set_app_state("category_sweep", {**state, "stage": 2, "proposal": proposal})
+                    rebuild()
+
+                page.run_thread(_work)
+
+            score_button = ft.FilledButton(
+                f"💳 경쟁도 조사 후 {keyword_curator.CATEGORY_KEYWORD_LIMIT}개 고르기 ({cost}회 사용)",
+                on_click=on_score, disabled=not keys_ok,
+            )
+            controls.append(ft.Text(
+                f"오늘 남은 호출 {keyword_research.remaining_calls_today():,}회",
+                size=fs(11, scale), color=BRAND_COLORS["text_muted"],
+            ))
+            controls.append(ft.Row([score_button, ft.OutlinedButton("버리기", on_click=on_discard)]))
+
+    proposal = state.get("proposal")
+    if stage >= 2 and proposal:
+        revive: list[tuple[str, ft.Checkbox]] = []
+        if not proposal["accepted"]:
+            controls.append(_warn_box(
+                "조사해 보니 노출을 노릴 만한 키워드가 없습니다 (검색량이 너무 적거나 경쟁이 너무 많음). "
+                "아래에서 직접 되살릴 수는 있습니다.",
+                scale,
+            ))
+        crowded = [
+            r for rows in proposal["groups"].values() for r in rows
+            if (r.get("ratio") or 0) > keyword_curator.MAX_DOCS_PER_SEARCH
+        ]
+        if crowded:
+            controls.append(_warn_box(
+                f"이 분야는 주력 키워드보다 경쟁이 높습니다 (검색 1회당 글 "
+                f"{min(r['ratio'] for r in crowded):,.0f}개 이상, 주력 기준은 "
+                f"{keyword_curator.MAX_DOCS_PER_SEARCH}개). 그중 가장 덜 붐비는 것을 골랐습니다. "
+                "상위 노출은 쉽지 않지만, 이 분야 글이 엉뚱한 상품 키워드로 쓰이는 것은 막아줍니다.",
+                scale,
+            ))
+        for gkey, glabel in keyword_curator.INTENT_GROUPS.items():
+            for r in proposal["groups"].get(gkey) or []:
+                weight = (
+                    "검색 타깃 제외(본문에는 등장)" if gkey == "identity"
+                    else f"전환 가중치 {keyword_curator.GROUP_DEFAULT_WEIGHT.get(gkey)}"
+                )
+                vol = f"{r['estimated_volume']:,}" if r.get("estimated_volume") else "—"
+                ratio = f" · 경쟁 {r['ratio']:.0f}배" if r.get("ratio") else ""
+                controls.append(ft.Text(
+                    f"+ {r['keyword']}  검색 {vol}{ratio} · [{glabel}] {weight} · {r.get('reason', '')}",
+                    size=fs(12, scale),
+                ))
+        if proposal["excluded"]:
+            controls.append(ft.Text("[제외됨 — 체크하면 함께 추가합니다]", weight=ft.FontWeight.BOLD, size=fs(12, scale)))
+            for r in proposal["excluded"]:
+                vol = f"{r['estimated_volume']:,}" if r.get("estimated_volume") else "—"
+                cb = ft.Checkbox(label=f"{r['keyword']} — 검색 {vol} · {r.get('reason', '')}")
+                revive.append((r["keyword"], cb))
+                controls.append(cb)
+
+        def on_apply(e: ft.Event) -> None:
+            added = proposal["accepted"] + [kw for kw, cb in revive if cb.value]
+            if not added:
+                status.value = "추가할 키워드가 없습니다."
+                status.update()
+                return
+            _busy(apply_button, "⏳ 추가하고 측정하는 중…")
+
+            def _work() -> None:
+                try:
+                    applied = keyword_curator.apply_and_measure(pool + added, proposal)
+                except Exception as exc:  # noqa: BLE001
+                    _fail(apply_button, exc)
+                    return
+                repo.set_app_state("category_sweep", {"done": (
+                    f"✅ '{state.get('category')}' 분야 키워드 {len(added)}개({', '.join(added)})를 더했습니다 — "
+                    f"SEO 키워드 총 {applied['pool']}개 (호출 {applied['calls']}회). 🧵 브랜드 킷에서 확인할 수 있습니다."
+                )})
+                rebuild()
+
+            page.run_thread(_work)
+
+        apply_button = ft.FilledButton("✅ 기존 키워드에 추가", on_click=on_apply, disabled=not keys_ok)
+        controls.append(ft.Row([apply_button, ft.OutlinedButton("버리기", on_click=on_discard)]))
+
+    return ft.Column(controls, spacing=8)
 
 
 def _build_keyword_diagnostic_section(page: ft.Page, scale: float) -> ft.Control:

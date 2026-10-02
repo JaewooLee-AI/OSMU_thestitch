@@ -412,3 +412,202 @@ def apply_and_measure(keywords: List[str], proposal: Optional[dict] = None) -> d
     # use_cache=True: 방금 조사에서 캐시에 들어간 후보는 다시 사지 않습니다.
     keyword_research.rank_keywords(pool, use_cache=True, include_trend=False)
     return {"pool": len(pool), "calls": repo.naver_calls_today() - before}
+
+
+# --- 분야 추가 ---------------------------------------------------------------
+# `propose` 는 모든 후보를 기존 풀과 한데 놓고 검색량 합계로 주제를 고릅니다.
+# 그러면 검색량이 본래 작은 사업 분야(교육 등)는 매번 주력 상품에 밀려 빠지고,
+# 씨앗을 바꿔도, TOPIC_LIMIT 를 올려도 결과가 그날 섞인 후보에 따라 흔들립니다.
+# 분야 추가는 경쟁 단위를 '분야 안'으로 좁힙니다: 기존 풀은 건드리지 않고,
+# 담당자가 이름 붙인 분야 안의 후보끼리만 겨뤄 상위 몇 개를 더합니다.
+
+# 분야 하나가 풀을 잠식하지 않도록 — 분야가 늘수록 C-Rank 집중도는 흐려집니다.
+CATEGORY_KEYWORD_LIMIT = 3
+# 부수 사업은 검색량이 본래 작아 기본 하한(200)이면 핵심 검색어까지 걸러집니다.
+# MIN_VIABLE_VOLUME(측정 불가 구간)보다는 충분히 위에 둡니다.
+CATEGORY_MIN_VOLUME = 50
+# 판정에 넘기는 후보 수(검색량 순). 사실상 전부입니다: 처음엔 80개로 잘랐더니
+# 728개 중 상위 80개가 전부 취미 DIY(스퀴시만들기 등)였고, 정작 환경교육(187위)·
+# 공예체험(363위)은 AI가 보지도 못했습니다. 응답에는 고른 것만 적게 해서 출력은 작습니다.
+CATEGORY_JUDGE_LIMIT = 1000
+# MAX_DOCS_PER_SEARCH(100)는 주력 상품 기준이라 부수 분야엔 맞지 않습니다. 실측에서
+# 더스티치 답례품은 검색 1회당 글 9~39개, 교육은 가장 덜 붐비는 생태전환교육이 256개였고
+# 41개 전부가 100을 넘었습니다. 분야 안에서는 덜 붐비는 순으로 고르고, 이 선 위만
+# '사실상 노출 불가'로 뺍니다. 100을 넘는 채택분은 화면에서 따로 알립니다.
+CATEGORY_MAX_DOCS_PER_SEARCH = 1000
+# 경쟁도 조사(유료) 상한 — 분야 판정을 통과한 것만 잽니다. 부수 분야는 검색량 큰
+# 일반어일수록 경쟁이 심해서(환경교육: 검색 1회당 글 2만 개), 이길 수 있는 건 아래쪽
+# 세부어입니다. 그래서 판정 통과분은 웬만하면 전부 재도록 넉넉히 둡니다.
+CATEGORY_SCORE_LIMIT = 50
+
+CATEGORY_SEED_SYSTEM_PROMPT = (
+    "당신은 네이버 블로그 SEO 전략가입니다. 브랜드 정보와 담당자가 추가하려는 **사업 분야 하나**를 "
+    "받아, 그 분야의 연관검색어를 끌어올 **씨앗 키워드 5개**를 제안하세요.\n\n"
+    "절대 규칙:\n"
+    "- 분야 이름을 그대로 쓰지 마세요. 브랜드가 그 분야에서 실제로 하는 일을, **고객이 네이버에 "
+    "입력하는 말**로 바꾸세요. 예를 들어 꽃집의 '교육' 분야라면 '교육'이 아니라 "
+    "'플라워클래스', '꽃꽂이수업' 같은 말입니다.\n"
+    "- 5개 모두 그 분야 안에서 서로 다른 각도(대상·형태·목적 등)여야 합니다. "
+    "다른 사업 분야의 말을 섞지 마세요.\n"
+    "- 브랜드명·자체 용어, '친환경'·'수제'·'프리미엄' 같은 수식어를 붙이지 마세요. "
+    "검색량이 거의 0이 되어 연관검색어가 나오지 않습니다.\n"
+    "- 띄어쓰기 없는 2~6글자 일반 명사가 좋습니다.\n\n"
+    '반드시 아래 JSON만 출력하세요: {"seeds": ["...", "...", "...", "...", "..."]}'
+)
+
+CATEGORY_JUDGE_SYSTEM_PROMPT = (
+    "당신은 네이버 블로그 SEO 전략가입니다. 브랜드 정보, 담당자가 추가하려는 사업 분야, "
+    "키워드 후보 목록을 받아 **그 분야에서** 이 브랜드가 정직하게 글을 쓸 수 있는 키워드만 고릅니다.\n\n"
+    "판정 기준:\n"
+    "- 그 분야에 속하지 않는 후보는 브랜드의 다른 사업에 맞더라도 고르지 마세요.\n"
+    "- 검색한 사람이 원하는 것을 이 브랜드가 줄 수 있어야 합니다. 단어가 비슷해도 브랜드가 하지 "
+    "않는 종류의 서비스·상품·지역이면 고르지 마세요.\n"
+    "- 검색 의도가 여러 갈래로 갈리는 광범위한 한 단어 일반어는 고르지 마세요.\n\n"
+    "그룹(검색 의도):\n"
+    "- purchase: 그 분야의 상품·서비스를 사거나 신청하려는 검색\n"
+    "- division: 본 제품과 별개인 사업 부문(교육·B2B 등)을 이용하려는 검색\n"
+    "- prospect: 아직 이용 의사는 없지만 브랜드와 접점이 되는 정보 탐색\n"
+    "- identity: 검색량은 적지만 브랜드가 그 분야에서 무엇을 하는지 드러내는 말\n\n"
+    "고른 키워드만 나열하세요. 고르지 않은 후보는 적지 않아도 됩니다.\n"
+    "반드시 아래 JSON만 출력하세요. 설명이나 코드펜스를 붙이지 마세요.\n"
+    '{"keywords": [{"keyword": "...", "group": "purchase|division|prospect|identity", '
+    '"reason": "채택 이유 25자 이내"}]}'
+)
+
+
+def suggest_category_seeds(category: str, vendor: Optional[str] = None) -> List[str]:
+    """Seeds for one business line, phrased the way its customers search.
+
+    The person typing '교육' is naming a part of their business, not a search
+    term; Naver has nothing useful to relate to the bare word. Translating it
+    is the step the marketer could not be expected to know how to do.
+    """
+    raw = generate_text(
+        vendor=vendor or get_configured_vendor(),
+        prompt=f"{_brand_context()}\n\n추가할 사업 분야: {category}",
+        system=CATEGORY_SEED_SYSTEM_PROMPT,
+        max_tokens=500,
+        note="keyword-category-seeds",
+    )
+    seeds = _parse(raw).get("seeds", [])
+    return [s.strip() for s in seeds if isinstance(s, str) and s.strip()][:keyword_research.HINT_KEYWORD_LIMIT]
+
+
+def find_category_candidates(
+    category: str, *, current: Optional[List[str]] = None, vendor: Optional[str] = None
+) -> dict:
+    """Free stage: seeds → related keywords → keep only this category's.
+
+    Relevance is judged before competition is measured, the reverse of the
+    full sweep, because here most related keywords belong to other lines of
+    business (a '체험' seed brings back farm stays and flight lessons) and
+    measuring them would spend metered calls on words that cannot be kept.
+    """
+    category = category.strip()
+    current = current or []
+    seeds = suggest_category_seeds(category, vendor=vendor)
+    if not seeds:
+        raise RuntimeError("이 분야의 씨앗 키워드를 만들지 못했습니다. 분야 이름을 조금 더 구체적으로 적어보세요.")
+
+    in_pool = {keyword_research.normalize(k) for k in current}
+    found = [
+        r for r in keyword_research.sweep_candidates(seeds, min_volume=CATEGORY_MIN_VOLUME)
+        if keyword_research.normalize(r["keyword"]) not in in_pool
+    ]
+    offered = found[:CATEGORY_JUDGE_LIMIT]
+    result = {"category": category, "seeds": seeds, "found": len(found), "relevant": []}
+    if not offered:
+        return result
+
+    lines = "\n".join(f"- {r['keyword']} ({r['volume']})" for r in offered)
+    prompt = (
+        f"{_brand_context()}\n\n"
+        f"추가하려는 사업 분야: {category}\n"
+        f"이미 쓰고 있는 SEO 키워드(후보 아님): {', '.join(current) if current else '(없음)'}\n\n"
+        f"키워드 후보 (괄호 안은 월검색량):\n{lines}"
+    )
+    raw = generate_text(
+        vendor=vendor or get_configured_vendor(),
+        prompt=prompt,
+        system=CATEGORY_JUDGE_SYSTEM_PROMPT,
+        max_tokens=4000,
+        note="keyword-category-judge",
+    )
+    by_keyword = {r["keyword"]: r for r in offered}
+    relevant = []
+    for item in _parse(raw).get("keywords", []):
+        keyword = (item.get("keyword") or "").strip()
+        row = by_keyword.pop(keyword, None)
+        if row is None:
+            continue  # 제시하지 않은 말을 지어냈거나 중복
+        group = item.get("group") if item.get("group") in INTENT_GROUPS else "prospect"
+        relevant.append({**row, "group": group, "reason": item.get("reason", "")})
+    result["relevant"] = relevant
+    return result
+
+
+def _category_score_order(relevant: List[dict]) -> List[dict]:
+    return sorted(relevant, key=lambda r: r.get("volume") or 0, reverse=True)[:CATEGORY_SCORE_LIMIT]
+
+
+def category_score_cost(relevant: List[dict]) -> int:
+    """Metered requests `propose_category` would spend, after cache hits."""
+    return keyword_research.estimate_sweep_cost(_category_score_order(relevant), limit=CATEGORY_SCORE_LIMIT)
+
+
+def propose_category(relevant: List[dict], *, use_cache: bool = True) -> dict:
+    """Metered stage: measure competition, keep the best few of this category.
+
+    The same arithmetic guards as `propose` apply — relevance does not make
+    an unmeasurable or hopelessly crowded term worth targeting — but nothing
+    here competes with the existing pool or with other categories.
+
+    Returns a proposal `apply` understands, so new keywords get their group's
+    default weight and identity terms stay out of target selection.
+    """
+    meta = {r["keyword"]: r for r in relevant}
+    to_score = _category_score_order(relevant)
+    scored = keyword_research.rank_keywords(
+        [r["keyword"] for r in to_score], use_cache=use_cache, include_trend=False
+    )
+
+    passed: List[dict] = []
+    scoring = {r["keyword"] for r in to_score}
+    excluded: List[dict] = [
+        {**r, "estimated_volume": r.get("volume"), "reason": f"분야 후보 {CATEGORY_SCORE_LIMIT}개 초과(검색량 순)"}
+        for r in relevant if r["keyword"] not in scoring
+    ]
+    for row in scored:
+        info = meta.get(row["keyword"], {})
+        group = info.get("group", "prospect")
+        volume = row.get("estimated_volume") or 0
+        docs = row.get("documents") or 0
+        ratio = (docs / volume) if volume else None
+        entry = {**row, "group": group, "reason": info.get("reason", ""), "ratio": ratio}
+        if group != "identity":
+            if volume and volume <= MIN_VIABLE_VOLUME:
+                excluded.append({**entry, "reason": f"검색량 없음({volume}회 이하)"})
+                continue
+            if ratio is not None and ratio > CATEGORY_MAX_DOCS_PER_SEARCH:
+                excluded.append({**entry, "reason": f"경쟁 과다(문서/검색 {ratio:.0f})"})
+                continue
+        passed.append(entry)
+
+    # 점수(검색량 ÷ log 경쟁)로 고르면 log 가 경쟁을 거의 못 깎아, 가장 붐비는 일반어
+    # (만들기체험: 검색 1회당 글 1.9만 개)가 위로 옵니다. 부수 분야에서 이길 수 있는 건
+    # 덜 붐비는 세부어라 경쟁 낮은 순으로 고릅니다. 경쟁 미측정은 맨 뒤.
+    passed.sort(key=lambda r: (r["ratio"] is None, r["ratio"] or 0, -(r.get("estimated_volume") or 0)))
+    excluded.extend(
+        {**r, "reason": f"분야당 {CATEGORY_KEYWORD_LIMIT}개까지 — 경쟁 낮은 순"}
+        for r in passed[CATEGORY_KEYWORD_LIMIT:]
+    )
+    kept = passed[:CATEGORY_KEYWORD_LIMIT]
+
+    groups: Dict[str, List[dict]] = {key: [] for key in INTENT_GROUPS}
+    for r in kept:
+        groups[r["group"]].append(r)
+    return {
+        "groups": groups,
+        "excluded": excluded,
+        "accepted": [r["keyword"] for r in kept],
+    }
