@@ -285,7 +285,7 @@ def validate_naver_tags(tags: List[str], fallback_keywords: List[str]) -> Tuple[
         if len(out) > before:
             issues.append({
                 "level": "fixed",
-                "message": f"발행 태그가 {before}개뿐이라 이 글의 타깃·SEO 키워드로 {len(out) - before}개를 채웠습니다.",
+                "message": f"발행 태그가 {before}개뿐이라 이 글의 타깃 키워드로 {len(out) - before}개를 채웠습니다.",
             })
         if len(out) < NAVER_TAG_MIN:
             issues.append({

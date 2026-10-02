@@ -26,12 +26,20 @@ HASHTAG_SYSTEM_PROMPT = (
 )
 
 
-def write_naver_hashtags(title: str, content: str, brand_kit: dict, vendor: str) -> list[str]:
+def write_naver_hashtags(title: str, content: str, target_keywords: list[str], vendor: str) -> list[str]:
     """Returns a list of "#tag" strings. Best-effort — callers must not let a
     failure here fail the whole draft, since these are a copy/paste aid for
-    the publish popup, not the post body itself."""
-    seo_keywords = brand_kit.get("seo_keywords") or []
-    keyword_hint = f"\n\n[SEO 타깃 키워드 - 참고용] {', '.join(seo_keywords)}" if seo_keywords else ""
+    the publish popup, not the post body itself.
+
+    Only this post's targets are offered, never the brand's whole pool: shown
+    the pool 'for reference', the model tagged a special-class art lesson
+    #DIY키트 #업사이클링키트, and a brand whose pool leads with 답례품 got
+    gift tags on posts that never mention a gift.
+    """
+    keyword_hint = (
+        f"\n\n[이 글이 다루는 검색 키워드 - 태그에 포함] {', '.join(target_keywords)}"
+        if target_keywords else ""
+    )
     prompt = f"[제목]\n{title}\n\n[본문]\n{content[:3000]}{keyword_hint}"
     raw = generate_text(vendor=vendor, prompt=prompt, system=HASHTAG_SYSTEM_PROMPT, max_tokens=400, note="naver-hashtags")
     try:

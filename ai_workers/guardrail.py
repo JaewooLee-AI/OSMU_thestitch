@@ -437,11 +437,36 @@ def apply_blacklist_dictionary(text: str, blacklist_map: dict) -> Tuple[str, Lis
     for forbidden, replacement in ordered:
         if not forbidden:
             continue
-        pattern = re.compile(re.escape(forbidden), re.IGNORECASE)
+        pattern = re.compile(r"([ \t]*)" + re.escape(forbidden) + r"([ \t]*)", re.IGNORECASE)
         if pattern.search(sanitized):
             hits.append({"forbidden": forbidden, "replacement": replacement})
-            sanitized = pattern.sub(replacement, sanitized)
+            sanitized = pattern.sub(lambda m, r=replacement: _join_without_echo(m, r), sanitized)
     return sanitized, hits
+
+
+def _join_without_echo(match: re.Match, replacement: str) -> str:
+    """The replacement, minus a word the surrounding text already says.
+
+    A replacement is written without knowing its neighbours: '저마다 세상에
+    하나뿐인 작품' with 세상에 하나뿐인 → 저마다 다른 came out as '저마다 저마다
+    다른 작품' in a published caption. Only the seam is checked — the word
+    right before and right after the match — so repetition the writer meant
+    elsewhere in the text is left alone.
+    """
+    lead, trail, text = match.group(1), match.group(2), match.string
+    words = (replacement or "").split()
+    if not words:
+        return lead + (replacement or "") + trail
+    before = re.search(r"(\S+)$", text[:match.start()])
+    if lead and before and before.group(1) == words[0]:
+        words = words[1:]
+    after = re.match(r"(\S+)", text[match.end():])
+    if words and trail and after and after.group(1) == words[-1]:
+        words = words[:-1]
+    if words == replacement.split():
+        return lead + replacement + trail
+    # 통째로 겹쳐 사라졌으면 양쪽 공백 중 하나만 남깁니다.
+    return f"{lead}{' '.join(words)}{trail}" if words else lead
 
 
 def run_llm_audit(

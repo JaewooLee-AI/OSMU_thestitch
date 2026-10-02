@@ -884,12 +884,10 @@ def revise_content(
 
         naver_hashtags = _safe(
             progress, "네이버 발행 태그 갱신 중…",
-            lambda: write_naver_hashtags(final_title, final_content, brand_kit, vendor),
+            lambda: write_naver_hashtags(final_title, final_content, target_keywords, vendor),
             campaign.get("naver_hashtags") or [],
         )
-        naver_hashtags, tag_issues = validate_naver_tags(
-            naver_hashtags, list(target_keywords) + list(seo_keywords)
-        )
+        naver_hashtags, tag_issues = validate_naver_tags(naver_hashtags, list(target_keywords))
 
         # The SNS channels aren't regenerated here (see docstring), and this
         # report replaces the old one — which used to drop the channels'
@@ -1079,7 +1077,7 @@ def _secondary_channels(
         )
         tags_future = pool.submit(
             _safe, progress, "네이버 발행 태그 생성 중…",
-            lambda: write_naver_hashtags(final_title, final_content, brand_kit, vendor),
+            lambda: write_naver_hashtags(final_title, final_content, list(target_keywords or []), vendor),
             [],
         )
         instagram = ig_future.result()
@@ -1101,9 +1099,7 @@ def _secondary_channels(
     # 컴플라이언스 요약은 리포트 전용이라 DB 컬럼(shorts_script)에 들어가기 전에 떼어냅니다.
     shorts_compliance = shorts.pop("compliance", None) or {"checked": False}
     shorts, shorts_issues = validate_shorts(shorts)
-    naver_hashtags, tag_issues = validate_naver_tags(
-        naver_hashtags, list(target_keywords or []) + list(brand_kit.get("seo_keywords") or [])
-    )
+    naver_hashtags, tag_issues = validate_naver_tags(naver_hashtags, list(target_keywords or []))
 
     fields = {
         "instagram_caption": instagram["caption"],
