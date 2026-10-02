@@ -124,6 +124,9 @@ create table if not exists campaigns (
     -- back to the default for anything it doesn't recognise, and a rejected
     -- INSERT would be a worse failure than an unknown mode.
     content_mode        text,
+    -- 'product' | 'education' | 'event' | 'notice' | 'story'; null/'auto' =
+    -- 메모와 공지·제품 정보로 자동 판단 (ai_workers/post_type.py).
+    post_type           text,
     -- 공지·모집 글의 일시/장소/비용/신청 방법 (JSON 오브젝트, 빈 값은 저장하지
     -- 않음). 비어 있으면 일반 글입니다 — 별도 유형 플래그를 두지 않는 이유는
     -- ai_workers/factsheet.py 참고.
@@ -133,6 +136,8 @@ create table if not exists campaigns (
     -- 이탈이 노출 순위를 도로 깎습니다.
     product_fields      text not null default '{}',
     storage_file_paths  text not null default '[]',
+    -- {rel_path: 사진 설명} — 네이버 사진 아래 설명 칸 (ai_workers/photo_captions.py).
+    photo_captions      text not null default '{}',
     guardrail_passed    integer,
     guardrail_report    text,
     instagram_caption   text,
@@ -315,6 +320,8 @@ _ADDED_COLUMNS = {
     "campaigns": {
         "source_title": "text",
         "content_mode": "text",
+        "post_type": "text",
+        "photo_captions": "text not null default '{}'",
         "notice_fields": "text not null default '{}'",
         "product_fields": "text not null default '{}'",
     },

@@ -18,6 +18,7 @@ _CAMPAIGN_JSON_COLS = {
     "notice_fields": {},
     "product_fields": {},
     "storage_file_paths": [],
+    "photo_captions": {},
     "guardrail_report": None,
     "instagram_hashtags": [],
     "x_content": [],

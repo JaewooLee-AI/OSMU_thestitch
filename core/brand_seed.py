@@ -51,7 +51,8 @@ PERSONA = (
     "20년 차 패션디자이너이자 10년 넘게 친환경 공예를 가르쳐 온 공방 선생님의 목소리로 이야기합니다. "
     "가장 행복한 날 입었던 한복이 종량제 봉투에 담겨 버려지는 것을 안타까워하는 마음에서 출발해, "
     "그 원단이 어떤 손을 거쳐 다시 쓰이는지를 만든 사람의 시선으로 설명합니다. "
-    "환경을 앞세워 가르치려 들지 않고, '예뻐서 골랐는데 알고 보니 의미까지 있더라'는 순서로 풀어냅니다. "
+    "환경을 앞세워 가르치려 들지 않고, 제품의 아름다움과 쓰임새를 먼저 보여준 뒤 새활용의 의미는 "
+    "독자가 뒤따라 알게 되는 순서로 풀어냅니다. "
     "작가의 감성과 살림하는 사람의 실용 감각을 동시에 갖춘, 다정하지만 전문적인 화자입니다."
 )
 
@@ -62,8 +63,9 @@ TONE_AND_MANNER = """- 존댓말을 씁니다. '~합니다'와 '~해요'를 자�
 - 수치와 인증은 확인된 것만 씁니다. 근거 없는 환경 효과(탄소 몇 kg 절감 등)는 절대 쓰지 않습니다.
 - 이모지는 한 문단에 최대 1개, 느낌표는 꼭 필요한 곳에만 씁니다.
 - 가격은 '싸다/저렴하다' 대신 '부담 없는', '일상형 럭셔리'라는 브랜드 언어를 씁니다.
-- 한복은 '낡은/헌' 대신 '기부받은', '가장 행복한 날 입었던'으로 부릅니다.
-- 매 글 끝에 한복 기부나 체험으로 이어지는 부드러운 한 문장을 남깁니다."""
+- 한복은 '낡은/헌' 대신 '기부받은' 같은 긍정적인 말로 부릅니다. '가장 행복한 날 입었던'은 브랜드의 상징 문구라 아껴 쓰고, 매 글에 반복하지 않습니다.
+- 글 끝에는 독자가 다음에 할 일을 한 문장으로 남깁니다. 기부·체험·주문·문의 중 그 글에 맞는 것을 고르고, 최근 글과 같은 문장으로 끝내지 않습니다.
+- 꾸밈말(정성스러운, 소중한, 특별한, 따뜻한)을 한 문장에 겹쳐 쓰지 않습니다. 다정함은 수식어가 아니라 독자에게 말을 거는 짧은 문장으로 냅니다."""
 
 CORE_FACTS = [
     "가장 행복한 날 입었던 한복을 기부받아 새활용하는 브랜드 '더봄봄'을 운영합니다 — 더(Plus)+봄(春, 행복)+봄(再生).",
@@ -234,11 +236,34 @@ def seed_if_empty() -> bool:
 # so drafts stayed long-winded however often a marketer asked for shorter
 # sentences in a one-off revision (customer report). It becomes a measurable
 # limit.
+#
+# 2026-10: posts about similar products read as one post — '가장 행복한 날
+# 입었던' in 8 of 11 posts and the same 옷장 속 한복 기부 closing in most of
+# them, both because the tone guide required them ("…으로 부릅니다", "매 글
+# 끝에 …"). The marketer also kept asking for shorter, warmer sentences; the
+# last rule says what "다정하게" means without inviting more adjectives.
 SEED_FIXES = [
+    ("- 한복은 '낡은/헌' 대신 '기부받은', '가장 행복한 날 입었던'으로 부릅니다.",
+     "- 한복은 '낡은/헌' 대신 '기부받은' 같은 긍정적인 말로 부릅니다. '가장 행복한 날 입었던'은 "
+     "브랜드의 상징 문구라 아껴 쓰고, 매 글에 반복하지 않습니다."),
+    ("- 매 글 끝에 한복 기부나 체험으로 이어지는 부드러운 한 문장을 남깁니다.",
+     "- 글 끝에는 독자가 다음에 할 일을 한 문장으로 남깁니다. 기부·체험·주문·문의 중 그 글에 맞는 것을 "
+     "고르고, 최근 글과 같은 문장으로 끝내지 않습니다.\n"
+     "- 꾸밈말(정성스러운, 소중한, 특별한, 따뜻한)을 한 문장에 겹쳐 쓰지 않습니다. 다정함은 수식어가 "
+     "아니라 독자에게 말을 거는 짧은 문장으로 냅니다."),
     ("- 존댓말을 씁니다. '~합니다'와 '~해요'를 자연스럽게 섞되, 문장은 2~3줄 안에서 끊습니다.",
      "- 존댓말을 씁니다. '~합니다'와 '~해요'를 자연스럽게 섞습니다.\n- 한 문장은 40자 안팎에서 끊고, 한 문단은 2~3문장까지만 씁니다. 같은 뜻을 두 번 말하지 않습니다."),
 ]
 _SEED_FIXES_STATE_KEY = "brand_seed_fixes_applied"
+
+# Same mechanism for the persona. It quoted "'예뻐서 골랐는데 알고 보니 의미까지
+# 있더라'는 순서로" as a description of the voice, and drafts copied the quote
+# verbatim into posts — one of the stock phrases body_variety now detects.
+SEED_PERSONA_FIXES = [
+    ("환경을 앞세워 가르치려 들지 않고, '예뻐서 골랐는데 알고 보니 의미까지 있더라'는 순서로 풀어냅니다.",
+     "환경을 앞세워 가르치려 들지 않고, 제품의 아름다움과 쓰임새를 먼저 보여준 뒤 새활용의 의미는 "
+     "독자가 뒤따라 알게 되는 순서로 풀어냅니다."),
+]
 
 # Same idea for the banned-term dictionary: entries added to BLACKLIST_MAP
 # after a kit was seeded. Each key is added once, and only if the admin's
@@ -251,8 +276,9 @@ SEED_BLACKLIST_ADDITIONS = {
 
 
 def apply_seed_fixes() -> int:
-    """Applies SEED_FIXES to the saved tone guide and SEED_BLACKLIST_ADDITIONS
-    to the saved dictionary. Returns how many changes were made."""
+    """Applies SEED_FIXES to the saved tone guide, SEED_PERSONA_FIXES to the
+    persona and SEED_BLACKLIST_ADDITIONS to the saved dictionary. Returns how
+    many changes were made."""
     done = set((repo.get_app_state(_SEED_FIXES_STATE_KEY) or {}).get("done") or [])
     tone = repo.get_brand_kit().get("tone_and_manner") or ""
     applied = 0
@@ -265,6 +291,20 @@ def apply_seed_fixes() -> int:
         done.add(old)
     if applied:
         repo.save_brand_kit(tone_and_manner=tone)
+
+    persona = repo.get_brand_kit().get("persona") or ""
+    persona_applied = 0
+    for old, new in SEED_PERSONA_FIXES:
+        marker = f"persona:{old}"
+        if marker in done:
+            continue
+        if old in persona:
+            persona = persona.replace(old, new)
+            persona_applied += 1
+        done.add(marker)
+    if persona_applied:
+        repo.save_brand_kit(persona=persona)
+    applied += persona_applied
 
     blacklist = dict(repo.get_brand_kit().get("blacklist_map") or {})
     added = 0

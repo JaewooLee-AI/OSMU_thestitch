@@ -191,7 +191,7 @@ def _is_openai_reasoning_model(model_name: str) -> bool:
     return (model_name or "").lower().startswith(("o1", "o3", "o4", "gpt-5"))
 
 
-def _call_openai(model_name, api_key, prompt, system, max_tokens):
+def _call_openai(model_name, api_key, prompt, system, max_tokens, thinking=False):
     from openai import OpenAI
 
     client = OpenAI(api_key=api_key)
@@ -216,7 +216,7 @@ def _call_openai(model_name, api_key, prompt, system, max_tokens):
     return text, usage_in, usage_out, choice.finish_reason == "length"
 
 
-def _call_anthropic(model_name, api_key, prompt, system, max_tokens):
+def _call_anthropic(model_name, api_key, prompt, system, max_tokens, thinking=False):
     from anthropic import Anthropic
 
     client = Anthropic(api_key=api_key)
@@ -242,7 +242,7 @@ def _call_anthropic(model_name, api_key, prompt, system, max_tokens):
     return text, usage_in, usage_out, res.stop_reason == "max_tokens"
 
 
-def _call_google(model_name, api_key, prompt, system, max_tokens):
+def _call_google(model_name, api_key, prompt, system, max_tokens, thinking=False):
     from google.genai import types
 
     client = google_client(api_key)
@@ -265,6 +265,12 @@ def _call_google(model_name, api_key, prompt, system, max_tokens):
             kwargs["system_instruction"] = system
         return types.GenerateContentConfig(**kwargs)
 
+    # `thinking=True` leaves the budget to the model (its own default, which
+    # is dynamic on 2.5/3.x) with headroom on top, instead of forcing it off.
+    # Requested only for the blog draft — see generate_text.
+    if thinking:
+        res = client.models.generate_content(model=model_name, contents=prompt, config=_config(False))
+        return _google_result(res)
     try:
         res = client.models.generate_content(model=model_name, contents=prompt, config=_config(True))
     except Exception as exc:  # noqa: BLE001
@@ -274,7 +280,10 @@ def _call_google(model_name, api_key, prompt, system, max_tokens):
         if "thinking" not in str(exc).lower():
             raise
         res = client.models.generate_content(model=model_name, contents=prompt, config=_config(False))
+    return _google_result(res)
 
+
+def _google_result(res):
     text = res.text or ""
     usage_in = usage_out = 0
     meta = getattr(res, "usage_metadata", None)
@@ -299,6 +308,7 @@ def generate_text(
     system: Optional[str] = None,
     max_tokens: int = 2000,
     note: Optional[str] = None,
+    thinking: bool = False,
 ) -> str:
     """Routes a prompt to the configured vendor and returns the text response.
     Records real token usage against `usage_log`.
@@ -307,6 +317,13 @@ def generate_text(
     retries once with a larger ceiling, then raises OutputTruncatedError. An
     empty response (e.g. a safety block) raises RuntimeError. Callers that are
     best-effort already catch exceptions and keep their input unchanged.
+
+    `thinking=True` lets a reasoning-capable model reason before answering.
+    Off by default: the audits, rebalances and SNS writers are checks or
+    short rewrites where it would only add latency and cost. On for the blog
+    draft, the single call that actually composes the post. Only Gemini
+    changes behaviour today — OpenAI reasoning models already reason, and
+    the Anthropic path does not enable extended thinking.
     """
     caller = _CALLERS.get(vendor)
     if caller is None:
@@ -315,7 +332,9 @@ def generate_text(
 
     budget = max_tokens
     for attempt in range(2):
-        text, usage_in, usage_out, truncated = caller(model_name, api_key, prompt, system, budget)
+        text, usage_in, usage_out, truncated = caller(
+            model_name, api_key, prompt, system, budget, thinking=thinking
+        )
 
         if not usage_in:
             usage_in = _estimate_tokens((system or "") + prompt)

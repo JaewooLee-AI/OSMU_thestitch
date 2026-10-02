@@ -54,12 +54,28 @@ def _publish_error_box(campaign: dict, scale: float) -> list[ft.Control]:
     return out
 
 
+def captions_text(campaign: dict) -> str:
+    """'1번 사진: …' lines, in post order — for pasting by hand."""
+    from ai_workers.photo_captions import ordered_photos
+
+    captions = campaign.get("photo_captions") or {}
+    order = ordered_photos(campaign.get("content") or "", campaign.get("storage_file_paths") or [])
+    return "\n".join(f"{i}번 사진: {captions[p]}" for i, p in enumerate(order, 1) if captions.get(p))
+
+
 def _fields_for_channel(page: ft.Page, scale: float, campaign: dict, channel: str) -> ft.Control:
     if channel == "naver":
-        return ft.Column([
+        fields = [
             _copy_field("제목", campaign.get("title") or "", page, scale),
             _copy_field("본문", campaign.get("content") or "", page, scale),
-        ], spacing=8)
+        ]
+        captions = captions_text(campaign)
+        if captions:
+            fields.append(_copy_field(
+                "사진 설명", captions, page, scale,
+                "네이버에서 각 사진을 누르면 아래에 '사진 설명을 입력하세요' 칸이 나옵니다.",
+            ))
+        return ft.Column(fields, spacing=8)
     if channel == "instagram":
         controls: list[ft.Control] = [
             _copy_field("캡션", campaign.get("instagram_caption") or "", page, scale),

@@ -18,7 +18,7 @@ import time
 
 import flet as ft
 
-from ai_workers import content_mode, factsheet, vision
+from ai_workers import content_mode, factsheet, post_type, vision
 from ai_workers.content_writer import LENGTH_MODES, regenerate_sns, revise_content, run_pipeline
 from ai_workers.sns_validator import TWEET_HARD_MAX, x_weighted_length
 from core import repo, storage
@@ -337,6 +337,55 @@ def _build_campaign_editor(page: ft.Page, campaign_id: str, scale: float, reload
         mode_caption,
     ]
 
+    # --- 글 유형 ---------------------------------------------------------------
+    # 교육·공지 글에 답례품 키워드가 끼어들던 문제의 입력 쪽 해법입니다
+    # (ai_workers/post_type.py). 기본은 '자동 판단'이고, 판단 결과를 바로
+    # 보여줘서 틀렸으면 담당자가 고정할 수 있게 합니다.
+    saved_type = campaign.get("post_type") or post_type.AUTO
+    type_dropdown = ft.Dropdown(
+        label="글 유형",
+        value=saved_type if saved_type in post_type.ORDER else post_type.AUTO,
+        options=[ft.DropdownOption(key=k, text=post_type.label_of(k)) for k in post_type.ORDER],
+        width=260,
+    )
+    type_caption = ft.Text("", size=fs(11, scale), color=BRAND_COLORS["text_muted"])
+
+    def _render_type_caption() -> None:
+        current = _collect_sheet_values()  # defined below; called only after it exists
+        guessed = post_type.resolve(
+            type_dropdown.value, memo_field.value or "",
+            current.get("notice_fields") or {}, current.get("product_fields") or {},
+            campaign.get("source_type") == "news",
+        )
+        prefix = "자동 판단 결과: " if guessed["auto"] else ""
+        type_caption.value = (
+            f"{prefix}{guessed['icon']} {guessed['label']} — "
+            + (
+                "검색 노출보다 내용이 중요한 글이라, 모드와 관계없이 '내용 우선'처럼 키워드 없이 씁니다."
+                if guessed.get("keyword_free")
+                else "제품 판매 글이 아니므로 답례품·제품 키워드를 제목과 본문에 강제하지 않습니다."
+                if not guessed["sells"]
+                else "선택한 콘텐츠 모드대로 검색 키워드를 반영합니다."
+                + (
+                    f" 분량은 {guessed['length_range'][0]:,}~{guessed['length_range'][1]:,}자"
+                    "(공백 제외, '내용 우선' 제외)로 맞춥니다."
+                    if guessed.get("length_range") else ""
+                )
+            )
+        )
+
+    def on_type_change(e: ft.Event) -> None:
+        _render_type_caption()
+        type_caption.update()
+
+    type_dropdown.on_select = on_type_change
+
+    controls += [
+        ft.Text("🗂️ 글 유형", weight=ft.FontWeight.BOLD, size=fs(13, scale)),
+        type_dropdown,
+        type_caption,
+    ]
+
     # --- 사진 업로드 -----------------------------------------------------------
     attached = list(campaign.get("storage_file_paths") or [])
     photo_row = ft.Row(wrap=True, spacing=8)
@@ -444,10 +493,13 @@ def _build_campaign_editor(page: ft.Page, campaign_id: str, scale: float, reload
             out[column] = factsheet.clean(sheet, {k: tf.value for k, tf in field_map.items()})
         return out
 
+    _render_type_caption()
+
     def on_save(e: ft.Event) -> None:
         repo.update_campaign(
             campaign_id, title=title_field.value.strip() or None, memo=memo_field.value,
-            content_mode=mode_group.value, **_collect_sheet_values(),
+            content_mode=mode_group.value, post_type=type_dropdown.value,
+            **_collect_sheet_values(),
         )
         gen_status.value = "💾 저장했습니다."
         gen_status.color = "#1B6E3C"
@@ -476,13 +528,18 @@ def _build_campaign_editor(page: ft.Page, campaign_id: str, scale: float, reload
         generate_hint.visible = not now_can_generate
         generate_button.update()
         generate_hint.update()
+        # 자동 판단은 메모에서 단서를 찾으므로, 메모가 바뀌면 판단 결과도 갱신합니다.
+        if type_dropdown.value == post_type.AUTO:
+            _render_type_caption()
+            type_caption.update()
 
     memo_field.on_change = on_memo_change
 
     def on_generate(e: ft.Event) -> None:
         repo.update_campaign(
             campaign_id, title=title_field.value.strip() or None, memo=memo_field.value,
-            content_mode=mode_group.value, **_collect_sheet_values(),
+            content_mode=mode_group.value, post_type=type_dropdown.value,
+            **_collect_sheet_values(),
         )
 
         # LLM 호출은 몇 초~수십 초가 걸린다 — on_click은 Flet의 이벤트 루프
@@ -685,11 +742,30 @@ def _build_channel_tabs(page: ft.Page, campaign: dict, title_field: ft.TextField
     naver_tags_field = ft.TextField(label="발행 태그", value=" ".join(campaign.get("naver_hashtags") or []), expand=True)
     naver_status = ft.Text("", size=fs(12, scale), color="#1B6E3C")
 
+    # 사진 설명 — 네이버 사진 아래 '사진 설명을 입력하세요' 칸에 들어간다
+    # (ai_workers/photo_captions.py). 여기서 고친 값은 다시 생성해도 유지된다.
+    from ai_workers.photo_captions import ordered_photos
+
+    saved_captions = campaign.get("photo_captions") or {}
+    caption_fields: dict[str, ft.TextField] = {}
+    caption_rows: list[ft.Control] = []
+    for i, rel in enumerate(ordered_photos(campaign.get("content") or "", campaign.get("storage_file_paths") or []), 1):
+        tf = ft.TextField(label=f"{i}번 사진 설명", value=saved_captions.get(rel, ""), expand=True, max_length=40)
+        caption_fields[rel] = tf
+        caption_rows.append(ft.Row([
+            ft.Container(
+                content=ft.Image(src=str(storage.abs_path(rel)), width=56, height=56, fit=ft.BoxFit.COVER),
+                width=56, height=56, border_radius=6, clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+            ),
+            tf,
+        ]))
+
     def on_save_naver(e: ft.Event) -> None:
         body_changed = (body_field.value or "").strip() != (campaign.get("content") or "").strip()
         repo.update_campaign(
             campaign_id, title=title_field.value.strip() or None, content=body_field.value,
             naver_hashtags=[t for t in naver_tags_field.value.split() if t.strip()],
+            photo_captions={rel: (tf.value or "").strip() for rel, tf in caption_fields.items() if (tf.value or "").strip()},
         )
         if body_changed:
             repo.mark_sns_stale(campaign_id)
@@ -788,6 +864,17 @@ def _build_channel_tabs(page: ft.Page, campaign: dict, title_field: ft.TextField
             ft.Text(title_field.value or "(제목 없음)", size=fs(18, scale), weight=ft.FontWeight.BOLD),
             body_field,
             naver_tags_field,
+            *(collapsible(
+                f"📷 사진 설명 ({sum(1 for tf in caption_fields.values() if tf.value)}/{len(caption_fields)}장)",
+                ft.Column(
+                    [ft.Text(
+                        "네이버 사진 아래 설명 칸에 자동으로 들어갑니다. 이미지 안의 글씨와 달리 검색에 잡히는 "
+                        "글이라, 사진이 많은 글에 특히 도움이 됩니다. 고친 뒤 [본문 저장]을 누르세요.",
+                        size=fs(10, scale), color=BRAND_COLORS["text_muted"],
+                    )] + caption_rows,
+                    spacing=6,
+                ),
+            ) if caption_rows else []),
             ft.Row([ft.FilledButton("본문 저장", on_click=on_save_naver), naver_status]),
             *collapsible("📋 복사해서 네이버에 직접 붙여넣기", ft.Column([
                 _copy_field("제목", title_field.value, page, scale),
@@ -983,6 +1070,13 @@ def _build_report_controls(campaign: dict, scale: float) -> list[ft.Control]:
     used_mode = report.get("content_mode")
     if used_mode:
         body.append(ft.Text(f"🎚️ 생성 모드: {content_mode.label_of(used_mode)}", size=fs(11, scale)))
+    used_type = report.get("post_type") or {}
+    if used_type.get("key"):
+        body.append(ft.Text(
+            f"🗂️ 글 유형: {post_type.label_of(used_type['key'])}"
+            + (" (자동 판단)" if used_type.get("auto") else ""),
+            size=fs(11, scale),
+        ))
     for hit in report.get("title_dictionary_hits") or []:
         body.append(ft.Text(f"🛡️ 제목 금기어 치환: '{hit['forbidden']}' → '{hit['replacement']}'", size=fs(11, scale)))
 
@@ -990,7 +1084,8 @@ def _build_report_controls(campaign: dict, scale: float) -> list[ft.Control]:
     if density and density.get("enforced") is False:
         counts = density.get("counts") or {}
         body.append(ft.Text(
-            "📖 내용 우선 모드 — 키워드 밀도를 강제하지 않았습니다. "
+            (f"{post_type.label_of(used_type['key'])} 글 — " if used_type.get("keyword_free") else "📖 내용 우선 모드 — ")
+            + "키워드 밀도를 강제하지 않았습니다. "
             + (f"자연스럽게 등장한 횟수: {counts}" if counts else "이 글에는 브랜드 키워드가 등장하지 않았습니다."),
             size=fs(11, scale),
         ))
@@ -1094,7 +1189,30 @@ def _build_report_controls(campaign: dict, scale: float) -> list[ft.Control]:
         target_text = f" · 목표 {target[0]:,}~{target[1]:,}자" if target else " · 짧은 공지라 분량 목표 없음"
         icon = "📏" if not length.get("short") else "🔸"
         body.append(ft.Text(
-            f"{icon} 본문 {length.get('chars', 0):,}자(공백 제외){target_text} · 평균 문장 {length.get('avg_sentence', 0)}자",
+            f"{icon} 본문 {length.get('chars', 0):,}자(공백 제외){target_text} · 평균 문장 {length.get('avg_sentence', 0)}자"
+            + (f" · 소제목 {length['headings']}개" if length.get("headings") else ""),
+            size=fs(11, scale),
+        ))
+
+    unsup = report.get("unsupported") or {}
+    if unsup.get("numbers") or unsup.get("quotes"):
+        parts = []
+        if unsup.get("numbers"):
+            parts.append("숫자 " + ", ".join(f"'{n}'" for n in unsup["numbers"][:6]))
+        if unsup.get("quotes"):
+            parts.append("인용 " + ", ".join(f"“{q[:24]}…”" for q in unsup["quotes"][:3]))
+        body.append(_status_box(
+            "🔎 메모·공지·제품 정보·회사 팩트 어디에도 없는 내용이 있습니다 — 사실인지 확인하고, "
+            "아니면 편집기에서 지워주세요: " + " / ".join(parts),
+            scale, "warning",
+        ))
+
+    split = report.get("sentence_length") or {}
+    if split.get("applied") or (split.get("after") or {}).get("long"):
+        before, after = split.get("before") or {}, split.get("after") or {}
+        body.append(ft.Text(
+            f"✂️ 긴 문장 나누기: {before.get('limit', 60)}자 넘는 문장 {before.get('long', 0)}개 → "
+            f"{after.get('long', 0)}개 (평균 {before.get('avg', 0)}자 → {after.get('avg', 0)}자)",
             size=fs(11, scale),
         ))
 
@@ -1108,6 +1226,12 @@ def _build_report_controls(campaign: dict, scale: float) -> list[ft.Control]:
         else:
             body.append(ft.Text(
                 f"✅ 최근 글 {body_var.get('compared', 0)}편과 본문이 충분히 다릅니다 (최대 겹침 {body_var.get('score', 0):.0%}).",
+                size=fs(11, scale),
+            ))
+        if body_var.get("stock_used"):
+            body.append(ft.Text(
+                "🔁 최근 글에서 반복된 표현이 이 글에도 있습니다: "
+                + ", ".join(f"'{p}'" for p in body_var["stock_used"]),
                 size=fs(11, scale),
             ))
 

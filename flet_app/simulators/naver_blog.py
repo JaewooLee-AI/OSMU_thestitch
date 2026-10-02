@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import flet as ft
 
+from ai_workers.body_format import heading_text
 from core import storage
 from flet_app.simulators.base import content_blocks
 
@@ -28,11 +29,14 @@ def _avatar() -> ft.Container:
     )
 
 
-def _figure(rel_path: str) -> ft.Control:
+def _figure(rel_path: str, caption: str = "") -> ft.Control:
     return ft.Column(
         [
             ft.Image(src=str(storage.abs_path(rel_path)), height=360, fit=ft.BoxFit.CONTAIN),
-            ft.Text("사진 설명을 입력하세요.", size=13, color="#AAAAAA", text_align=ft.TextAlign.CENTER),
+            ft.Text(
+                caption or "사진 설명을 입력하세요.", size=13,
+                color="#666666" if caption else "#AAAAAA", text_align=ft.TextAlign.CENTER,
+            ),
         ],
         spacing=6,
     )
@@ -43,6 +47,7 @@ def render(campaign: dict, is_mobile: bool = False, blog_name: str = "공식 블
     content = campaign.get("content") or ""
     attached = campaign.get("storage_file_paths") or []
     hashtags = campaign.get("naver_hashtags") or []
+    captions = campaign.get("photo_captions") or {}
 
     blocks = content_blocks(content)
     tagged = {value for kind, value in blocks if kind == "image"}
@@ -50,10 +55,15 @@ def render(campaign: dict, is_mobile: bool = False, blog_name: str = "공식 블
 
     body_controls: list[ft.Control] = []
     for kind, value in blocks:
-        if kind == "text":
+        if kind == "text" and heading_text(value) is not None:
+            # 네이버 붙여넣기와 같은 모양 — 소제목 줄은 굵게 (body_format.to_html).
+            body_controls.append(ft.Text(
+                value, size=17 if is_mobile else 19, weight=ft.FontWeight.BOLD, color="#222222",
+            ))
+        elif kind == "text":
             body_controls.append(ft.Text(value, size=15 if is_mobile else 16, color="#333333"))
         else:
-            body_controls.append(_figure(value))
+            body_controls.append(_figure(value, captions.get(value, "")))
 
     if not body_controls:
         body_controls.append(ft.Text("본문이 비어 있습니다.", color="#999999"))
@@ -68,7 +78,7 @@ def render(campaign: dict, is_mobile: bool = False, blog_name: str = "공식 블
             bgcolor="#FFFAF0", border=ft.Border.all(1, "#FBD38D"), border_radius=6, padding=10,
         ))
         for path in untagged:
-            body_controls.append(_figure(path))
+            body_controls.append(_figure(path, captions.get(path, "")))
 
     controls: list[ft.Control] = [
         ft.Text(title, size=24 if is_mobile else 32, weight=ft.FontWeight.BOLD, color="#222222"),

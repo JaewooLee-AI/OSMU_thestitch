@@ -30,7 +30,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, List, Optional
 
-from ai_workers import body_variety, content_mode
+from ai_workers import body_format, body_variety, content_mode, post_type, sentence_length, unsupported
 from ai_workers.guardrail import (
     apply_blacklist_dictionary,
     apply_guardrail_if_enabled,
@@ -42,6 +42,7 @@ from ai_workers.instagram_caption_writer import write_instagram_caption
 from ai_workers.multi_llm_router import generate_text, get_configured_vendor
 from ai_workers.naver_hashtag_writer import write_naver_hashtags
 from ai_workers.news_scraper import scrape_article
+from ai_workers.photo_captions import write_captions
 from ai_workers.photo_placement import (
     caption_attachments,
     ensure_all_photos_tagged,
@@ -55,6 +56,7 @@ from ai_workers.prompt_builder import (
     photo_context,
     photo_instruction,
     recent_posts_block,
+    stock_phrases_block,
 )
 from ai_workers import factsheet
 from ai_workers import search_intent
@@ -85,17 +87,32 @@ from ai_workers.title_variety import (
 from ai_workers.x_thread_writer import write_x_thread
 from core import repo
 
-def _title_generation_instruction(seo_keywords: List[str], source_title: str = "") -> str:
+def _title_generation_instruction(
+    seo_keywords: List[str], source_title: str = "", keyword_rule: str = "optional"
+) -> str:
     """Asks the LLM to draft the title alongside the body in the same call
     (see module docstring on why title+body aren't split across two calls).
     When SEO keywords are configured, the instruction front-loads keyword
     inclusion here — cheaper than fixing it after the fact — and
     `rewrite_title_for_keyword` below is the verify/correct backstop for
-    when the model ignores it anyway."""
+    when the model ignores it anyway.
+
+    `keyword_rule` comes from post_type.title_keyword_rule. This used to
+    demand "최소 1개" from the pool on every post in every mode — including
+    '내용 우선', which promises not to show the pool — so a 교육 글 or a
+    연휴 안내 had to put a 답례품 keyword in its headline, and the body
+    followed the headline. Only a sales post in '노출 우선' is now required
+    to carry one; elsewhere it is offered, or not mentioned at all."""
     keyword_line = ""
-    if seo_keywords:
+    if seo_keywords and keyword_rule == "required":
         keyword_line = (
             f" 다음 타깃 키워드 중 최소 1개를 제목에 자연스럽게 포함하세요: {', '.join(seo_keywords)}."
+        )
+    elif seo_keywords and keyword_rule == "optional":
+        keyword_line = (
+            " 다음 검색 키워드 중 **이 글의 소재와 실제로 맞는 것이 있을 때만** 1개를 제목에 "
+            "자연스럽게 넣고, 맞는 것이 없으면 키워드 없이 소재가 드러나는 제목을 쓰세요: "
+            f"{', '.join(seo_keywords)}."
         )
     if source_title:
         # Newsjacking: the value is the brand's angle on the news, not the
@@ -177,10 +194,15 @@ def _recommendation(report: Dict) -> Dict:
     # Not reported in '내용 우선': that mode never shows the model the pool,
     # so an empty target list is the mode working as asked, not a gap in the
     # keyword list.
+    # Nor for a post type that is keyword-free by design (교육·공지 — see
+    # post_type.py): telling the marketer to add education keywords sends
+    # them hunting for words that were measured as unwinnable.
+    keyword_free = bool((report.get("post_type") or {}).get("keyword_free"))
     no_targets = (
         report.get("seo_targets") == []
         and bool(report.get("seo_pool"))
         and report.get("content_mode") != "rich"
+        and not keyword_free
     )
 
     # 검색 의도 미충족은 이 글의 결함이 아니라 입력의 공백입니다. 답례품을
@@ -268,12 +290,27 @@ def measure_length(content: str, target=None) -> Dict:
     '너무 짧다' and '장황하다' complaints are actually about."""
     body = re.sub(r"\[IMAGE:[^\]]*\]", "", content or "")
     body = re.sub(r"\[원문 기사 출처:[^\]]*\]", "", body)
+    headings = body_format.count_headings(body)
+    body = body_format.strip_markers(body)
     chars = len(re.sub(r"\s", "", body))
     sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(body) if s.strip()]
     avg = round(sum(len(s) for s in sentences) / len(sentences)) if sentences else 0
-    out = {"chars": chars, "avg_sentence": avg, "target": list(target) if target else None}
+    out = {
+        "chars": chars, "avg_sentence": avg, "headings": headings,
+        "target": list(target) if target else None,
+    }
     out["short"] = bool(target) and chars < target[0] * LENGTH_SHORT_RATIO
     return out
+
+
+def _protected_terms(brand_kit: dict) -> List[str]:
+    """Words every pass must leave alone: brand names, glossary terms and SEO
+    keywords. Used by the sentence splitter (must not drop them) and the
+    stock-phrase finder (must not ban them — they are meant to repeat)."""
+    terms = [brand_kit.get("brand_name") or "", brand_kit.get("sub_brand") or ""]
+    terms += list((brand_kit.get("terminology") or {}).keys())
+    terms += list(brand_kit.get("seo_keywords") or [])
+    return [t for t in dict.fromkeys(terms) if t]
 
 
 def _report(progress: Progress, message: str) -> None:
@@ -307,6 +344,8 @@ def _quality_pass(
     notice_fields: Optional[dict] = None,
     product_fields: Optional[dict] = None,
     history: Optional[List[dict]] = None,
+    ptype: Optional[dict] = None,
+    sources: Optional[List[str]] = None,
 ):
     """Stages 3~6c: compliance, SEO density, and the deterministic backstops.
 
@@ -368,6 +407,19 @@ def _quality_pass(
         report["seo_regression_fixed"] = regressed
         report["audit_failed"] = bool(report.get("audit_failed") or reguard.get("audit_failed"))
 
+    # --- stage 4b2: split over-long sentences ---
+    # The tone guide asks for short sentences; drafts ignored it (43~61자
+    # average) and the marketer's "문장은 짧게" revisions only ever fixed one
+    # post. Verified and fixed here instead of only instructed — see
+    # ai_workers/sentence_length.py. After the SEO pass, whose insertions
+    # are a common source of long sentences; before proofreading.
+    if sentence_length.long_sentences(final_content):
+        _report(progress, "긴 문장 나누는 중…")
+    final_content, split_report = sentence_length.shorten(
+        final_content, vendor, _protected_terms(brand_kit)
+    )
+    report["sentence_length"] = split_report
+
     # --- stage 4c: spelling / spacing ---
     # Runs on every generation, not just on revisions: the marketer's typed
     # edits reach here through revise_content, and the guardrail and SEO
@@ -377,6 +429,9 @@ def _quality_pass(
     _report(progress, "맞춤법·오탈자 교정 중…")
     final_content, applied_fixes, rejected_fixes = proofread(final_content, brand_kit, vendor)
     report["proofread"] = {"applied": applied_fixes, "rejected": rejected_fixes}
+    # The audit, rebalance and revision passes are fresh LLM output and may
+    # have reverted to markdown ('## ', '- ') — fold it back to the markers.
+    final_content = body_format.normalize(final_content)
 
     # --- stages 5~6: deterministic backstops ---
     final_content = ensure_image_tags_preserved(report["final_text"], final_content)
@@ -458,6 +513,10 @@ def _quality_pass(
     report["body_variety"] = (
         body_variety.report(final_content, history) if history is not None else {"checked": False}
     )
+    if history is not None:
+        stock = body_variety.stock_phrases(history, _protected_terms(brand_kit))
+        report["body_variety"]["stock_phrases"] = stock
+        report["body_variety"]["stock_used"] = body_variety.stock_phrases_used(final_content, stock)
 
     # --- stage 6e: body length vs the mode's target (report only) ---
     # Brief notices carry no target (see run_pipeline), so they are measured
@@ -469,6 +528,14 @@ def _quality_pass(
         target = profile.get("length_range")
     report["length"] = measure_length(final_content, target)
 
+    # --- stage 6f: numbers and quotes with no source (report only) ---
+    if sources is not None:
+        report["unsupported"] = unsupported.find(final_content, sources)
+
+    if ptype:
+        report["post_type"] = {
+            "key": ptype["key"], "auto": ptype["auto"], "keyword_free": bool(ptype.get("keyword_free")),
+        }
     report["recommendation"] = _recommendation(report)
     return final_content, report
 
@@ -500,7 +567,15 @@ def run_pipeline(campaign_id: str, progress: Progress = None) -> Dict:
         is_news = campaign.get("source_type") == "news"
         seo_keywords = brand_kit.get("seo_keywords") or []
         mode = content_mode.resolve(campaign.get("content_mode"), brand_kit)
-        _report(progress, f"콘텐츠 모드: {mode['icon']} {mode['label']}")
+        ptype = post_type.resolve(
+            campaign.get("post_type"), memo, notice_fields, product_fields, is_news
+        )
+        mode = post_type.apply_to_mode(mode, ptype)
+        _report(
+            progress,
+            f"콘텐츠 모드: {mode['icon']} {mode['label']} · 글 유형: {ptype['icon']} {ptype['label']}"
+            + (" (자동 판단)" if ptype["auto"] else ""),
+        )
 
         # --- stage 0: news article (news track only) ---
         article_text = ""
@@ -574,6 +649,9 @@ def run_pipeline(campaign_id: str, progress: Progress = None) -> Dict:
                 photo_instruction(captions),
             ]
             + recent_posts_block(body_variety.prompt_history(post_history))
+            + stock_phrases_block(
+                body_variety.stock_phrases(post_history, _protected_terms(brand_kit))
+            )
             + [
             ]
             + (
@@ -585,6 +663,7 @@ def run_pipeline(campaign_id: str, progress: Progress = None) -> Dict:
                             brand_kit.get("non_target_keywords"),
                         ),
                         source_title,
+                        post_type.title_keyword_rule(mode, ptype),
                     )
                     + avoidance_instruction(title_history)
                 ]
@@ -605,19 +684,25 @@ def run_pipeline(campaign_id: str, progress: Progress = None) -> Dict:
         draft = generate_text(
             vendor=vendor,
             prompt=prompt,
-            system=build_blog_system_prompt(brand_kit, draft_mode),
+            system=build_blog_system_prompt(brand_kit, draft_mode, ptype),
             # The ceiling moves with the length target. The target counts
             # characters without spaces; with spaces a Korean post is ~1.3x
             # that, and the tokenizers spend roughly one token per 1~1.5
             # characters, so 1.5 tokens per target character leaves headroom
             # for the title line and photo tags.
             max_tokens=max(3000, int((draft_mode.get("length_range") or (0, 0))[1] * 1.5) + 1000),
-            note=f"blog-draft:{mode['key']}",
+            note=f"blog-draft:{mode['key']}:{ptype['key']}",
+            # The one creative call of the run. Every other call checks or
+            # patches this text, so it is the only one worth reasoning on —
+            # with thinking forced off, a lite model produced 400~750자
+            # against a 1,500자 target and padded the end with greetings.
+            thinking=True,
         )
 
         generated_title = None
         if needs_title:
             generated_title, draft = _extract_generated_title(draft)
+        draft = body_format.normalize(draft)
         final_title = given_title or (generated_title or "").strip() or "제목 미정"
 
         # Checkpoint the paid-for draft before the audit/SEO stages, so an API
@@ -707,9 +792,20 @@ def run_pipeline(campaign_id: str, progress: Progress = None) -> Dict:
         final_content, report = _quality_pass(
             draft, final_title, target_keywords, skipped_keywords, brand_kit, vendor,
             storage_file_paths, is_news, source_url, progress, mode, notice_fields,
-            product_fields, history=post_history,
+            product_fields, history=post_history, ptype=ptype,
+            sources=unsupported.sources_for(campaign, brand_kit, captions, article_text),
         )
         report["title_dictionary_hits"] = title_dict_hits
+
+        # --- stage 6g: photo captions for Naver's 사진 설명 line ---
+        photo_captions = _safe(
+            progress, "사진 설명 작성 중…",
+            lambda: write_captions(
+                final_title, final_content, storage_file_paths, captions, brand_kit, vendor,
+                existing=campaign.get("photo_captions") or {},
+            ),
+            campaign.get("photo_captions") or {},
+        ) if storage_file_paths else {}
         report["title_seo"] = {
             "checked": bool(needs_title and seo_keywords),
             "fixed": bool(needs_title and title_missing_keywords),
@@ -734,6 +830,7 @@ def run_pipeline(campaign_id: str, progress: Progress = None) -> Dict:
             content=final_content,
             guardrail_passed=report["compliance_pass"],
             guardrail_report=report,
+            photo_captions=photo_captions,
             **sns_fields,
         )
         # Outlives this campaign on purpose, so a future run still avoids this
@@ -759,6 +856,8 @@ REVISION_SYSTEM_PROMPT = (
     "새로운 사실이나 수치를 지어내지 마세요. "
     "`[IMAGE: 경로]` 형식의 태그는 사진이 삽입될 위치 마크업이므로 삭제·수정하지 말고, "
     "개수와 순서를 그대로 유지한 채 문맥에 맞는 자리에 남겨두세요. "
+    "'■ '로 시작하는 소제목 줄과 '• '로 시작하는 목록 줄은 형식을 유지하고, 마크다운 "
+    "기호(#, **)는 쓰지 마세요. "
     "고쳐 쓴 본문 전체만 출력하고 다른 설명은 절대 덧붙이지 마세요."
 )
 
@@ -861,6 +960,12 @@ def revise_content(
         # Re-select targets from the revised text: a length change can drop a
         # keyword the previous target set relied on.
         mode = content_mode.resolve(campaign.get("content_mode"), brand_kit)
+        ptype = post_type.resolve(
+            campaign.get("post_type"), campaign.get("memo") or "",
+            campaign.get("notice_fields") or {}, campaign.get("product_fields") or {},
+            campaign.get("source_type") == "news",
+        )
+        mode = post_type.apply_to_mode(mode, ptype)
         target_keywords = select_target_keywords(
             final_title, revised, seo_keywords, limit=mode["max_targets"],
             weights=brand_kit.get("keyword_weights"), min_mentions=mode["min_mentions"],
@@ -874,6 +979,11 @@ def revise_content(
             campaign.get("source_url"), progress, mode,
             campaign.get("notice_fields") or {}, campaign.get("product_fields") or {},
             history=repo.recent_posts(exclude_id=campaign_id, limit=body_variety.HISTORY_LIMIT),
+            ptype=ptype,
+            # The body being revised is the marketer's own, so whatever it
+            # already says counts as given — only what the revision adds is
+            # flagged.
+            sources=unsupported.sources_for(campaign, brand_kit) + [base_content],
         )
         report["revision"] = {
             "instruction": instruction,
@@ -888,6 +998,19 @@ def revise_content(
             campaign.get("naver_hashtags") or [],
         )
         naver_hashtags, tag_issues = validate_naver_tags(naver_hashtags, list(target_keywords))
+
+        # Captions the marketer already has (and may have edited) are kept;
+        # only photos without one get a new caption.
+        photo_captions = campaign.get("photo_captions") or {}
+        if storage_file_paths and any(p not in photo_captions for p in storage_file_paths):
+            photo_captions = _safe(
+                progress, "사진 설명 보충 중…",
+                lambda: write_captions(
+                    final_title, final_content, storage_file_paths,
+                    caption_attachments(storage_file_paths), brand_kit, vendor, existing=photo_captions,
+                ),
+                photo_captions,
+            )
 
         # The SNS channels aren't regenerated here (see docstring), and this
         # report replaces the old one — which used to drop the channels'
@@ -910,6 +1033,7 @@ def revise_content(
             guardrail_passed=report["compliance_pass"],
             guardrail_report=report,
             naver_hashtags=naver_hashtags,
+            photo_captions=photo_captions,
         )
         _report(progress, "완료")
         return repo.get_campaign(campaign_id)

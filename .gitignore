@@ -19,3 +19,4 @@ __pycache__/
 .playwright-mcp/
 *.swp
 osmu-dashboard.png
+.pytest_cache/

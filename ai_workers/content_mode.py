@@ -90,8 +90,14 @@ MODES: Dict[str, dict] = {
         # placement and density, not from a lower bar for what counts.
         "min_mentions": 2,
         "enforce_density": True,
-        "density_min": 3,
-        "density_max": 6,
+        # Was 3. The third and fourth mentions are where the rebalance pass
+        # starts bolting the keyword onto sentences that don't want it —
+        # "꼼꼼하게 키링제작을 진행하여", 돌답례품 three times in one
+        # paragraph (measured on a product post, 2026-10). The title and the
+        # first paragraph carry the ranking weight; extra body mentions buy
+        # little and cost the reader, and repetition reads as stuffing.
+        "density_min": 2,
+        "density_max": 5,
         "rewrite_title": True,
         "length_range": (1500, 2000),
     },

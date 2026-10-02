@@ -92,6 +92,17 @@ def few_shot_block(brand_kit: dict) -> List[str]:
 RECENT_POSTS_PROMPT_LIMIT = 5
 
 
+def stock_phrases_block(phrases: List[str]) -> List[str]:
+    """Phrases recent posts keep reusing — see body_variety.stock_phrases."""
+    if not phrases:
+        return []
+    return [
+        "[최근 글에서 반복된 표현 — 아래 표현은 최근 글 여러 편에 거의 그대로 쓰였습니다. "
+        "이번 글에서는 쓰지 말고, 필요하면 이 글의 소재에 맞는 다른 말로 표현하세요]\n"
+        + "\n".join(f"- {p}" for p in phrases)
+    ]
+
+
 def recent_posts_block(recent: List[dict]) -> List[str]:
     """Openings and endings of recent posts, as "don't repeat these".
 
@@ -156,8 +167,10 @@ def seo_block(brand_kit: dict, hint: str = content_mode.HINT_RELEVANCE) -> List[
         return [
             "[네이버 블로그 SEO 지침] 이 글은 검색 노출을 우선 목표로 합니다. "
             "아래 키워드 후보 중 이 글의 주제에 맞는 2~3개를 골라, 제목과 본문에 걸쳐 "
-            "각각 2~4회 자연스럽게 배치하세요. 다만 키워드를 넣으려고 글의 소재 자체를 "
-            "바꾸지는 마세요 — 소재는 그대로 두고 표현을 키워드 쪽으로 맞추는 것입니다.\n"
+            "각각 2~3회 자연스럽게 배치하세요. 가장 중요한 키워드는 제목과 첫 문단에 두고, "
+            "**한 문단에는 같은 키워드를 한 번만** 쓰세요. '키링제작을 진행하여'처럼 키워드를 "
+            "억지로 문장에 끼우지 말고, 그 단어가 자연스러운 자리에만 쓰세요. 키워드를 넣으려고 "
+            "글의 소재 자체를 바꾸지는 마세요 — 소재는 그대로 두고 표현을 키워드 쪽으로 맞추는 것입니다.\n"
             "키워드 후보: " + ", ".join(keywords)
         ]
 
@@ -171,7 +184,13 @@ def seo_block(brand_kit: dict, hint: str = content_mode.HINT_RELEVANCE) -> List[
     ]
 
 
-def length_block(length_range) -> List[str]:
+_PRODUCT_READER_NEEDS = (
+    "무엇인지, 무엇으로 어떻게 만들었는지, 크기·구성·쓰임새, 어떤 사람·상황에 맞는지, "
+    "받는 사람이 느낄 점, 주문·이용 방법"
+)
+
+
+def length_block(length_range, reader_needs: str = _PRODUCT_READER_NEEDS) -> List[str]:
     """The body-length target and, more importantly, what fills it.
 
     A target alone gets met with brand padding (company history, 인증 이력);
@@ -186,10 +205,8 @@ def length_block(length_range) -> List[str]:
     return [
         f"[분량] 본문은 **공백 제외 {low:,}~{high:,}자**로 쓰세요. 문장은 [톤앤매너 가이드]대로 "
         "짧게 끊고, 분량은 문장 수를 늘려서 채웁니다.\n"
-        "이 제품·소재를 **처음 보는 독자**도 이해할 수 있게 쓰세요. 사진만 보고는 알 수 없는 "
-        "것 — 무엇인지, 무엇으로 어떻게 만들었는지, 크기·구성·쓰임새, 어떤 사람·상황에 "
-        "맞는지, 받는 사람이 느낄 점, 주문·이용 방법 — 중 제공된 자료에 있는 것을 구체적으로 "
-        "풀어 쓰세요.\n"
+        "이 소재를 **처음 보는 독자**도 이해할 수 있게 쓰세요. 사진만 보고는 알 수 없는 "
+        f"것 — {reader_needs} — 중 제공된 자료에 있는 것을 구체적으로 풀어 쓰세요.\n"
         "분량을 회사 소개, 브랜드 철학, 수상·인증 이력, 같은 말의 반복으로 채우지 마세요. "
         "제공된 자료에 없는 사실을 지어내서 늘리는 것은 금지입니다 — 자료가 부족하면 "
         "분량보다 정확성이 먼저입니다."
@@ -287,21 +304,52 @@ BLOG_SYSTEM_PROMPT_BASE = (
     "당신은 네이버 블로그 독자를 겨냥한 마케팅 카피라이터입니다. 제공된 자료를 바탕으로 "
     "첫 문단에서 독자를 붙잡는 정보성 블로그 포스트 본문을 한국어로 작성하세요. "
     "과장되거나 근거 없는 주장은 절대 쓰지 마세요. 제공된 자료에 없는 수치·인증·수상 이력을 "
-    "지어내지 마세요. 마크다운 제목 기호(#)는 쓰지 말고, 문단으로만 구성하세요."
+    "지어내지 마세요. 자료에 없는 사람(학생·고객·참여자)의 말을 따옴표로 만들어 넣지 마세요 — "
+    "실제로 한 말이 자료에 있을 때만 인용합니다. 소요 시간·인원·회차·가격 같은 숫자도 자료에 "
+    "있는 것만 씁니다."
+)
+
+# 예전에는 "마크다운 제목 기호(#)는 쓰지 말고, 문단으로만 구성하세요"였습니다.
+# 그 결과 모든 글이 소제목 없는 문단의 나열이 되었고, 담당자는 초안을 매번
+# Gemini에 다시 넣어 소제목과 목록을 붙였습니다. 이제 구조를 직접 요구하되,
+# 마크다운이 아니라 어디에 붙여도 그대로 읽히는 기호로 씁니다 — body_format.py.
+BLOG_FORMAT_RULES = (
+    "[글 형식]\n"
+    "- 본문을 2~4개 구획으로 나누고, 각 구획 첫 줄에 소제목을 쓰세요. 소제목은 '■ '로 "
+    "시작하는 한 줄이며 20자 안팎으로, 그 구획에서 독자가 알게 될 내용을 담으세요.\n"
+    "- 일정·구성·준비물·옵션처럼 나열되는 정보는 문장으로 늘어놓지 말고 '• '로 시작하는 "
+    "줄에 하나씩 정리하세요.\n"
+    "- 문단은 2~3문장으로 짧게 끊고, 문단 사이에는 빈 줄을 두세요.\n"
+    "- 마크다운 기호(#, **, -)는 쓰지 마세요.\n"
+    "- 마무리는 1~2문장입니다. 감사 인사·다짐·'많은 관심 부탁드립니다' 같은 같은 뜻의 "
+    "문장을 끝에 이어 붙이지 마세요."
 )
 
 
-def build_blog_system_prompt(brand_kit: dict, mode: dict | None = None) -> str:
-    """Full Naver-blog system prompt: base + persona + facts + few-shot +
-    glossary + (mode-dependent) keyword pressure and length target."""
+def build_blog_system_prompt(
+    brand_kit: dict, mode: dict | None = None, ptype: dict | None = None
+) -> str:
+    """Full Naver-blog system prompt: base + format + persona + facts +
+    few-shot + glossary + post-type outline + (mode-dependent) keyword
+    pressure and length target.
+
+    `mode` should already be narrowed by post_type.apply_to_mode when a
+    post type is given — this function does not re-apply the cap."""
+    from ai_workers import post_type
+
     profile = mode or content_mode.resolve(None, brand_kit)
-    parts = [BLOG_SYSTEM_PROMPT_BASE]
+    parts = [BLOG_SYSTEM_PROMPT_BASE, BLOG_FORMAT_RULES]
     parts += persona_block(brand_kit)
     parts += core_facts_block(brand_kit)
     parts += few_shot_block(brand_kit)
     parts += terminology_block(brand_kit)
+    if ptype:
+        parts += post_type.structure_block(ptype)
     parts += seo_block(brand_kit, profile.get("hint", content_mode.HINT_RELEVANCE))
-    parts += length_block(profile.get("length_range"))
+    parts += length_block(
+        profile.get("length_range"),
+        (ptype or {}).get("reader_needs") or _PRODUCT_READER_NEEDS,
+    )
     return "\n\n".join(parts)
 
 

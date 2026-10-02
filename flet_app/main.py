@@ -64,6 +64,7 @@ from flet_app.views import (  # noqa: E402
     dashboard_view,
     naver_publish_view,
     news_curation_view,
+    post_audit_view,
     settings_view,
     workbench_view,
 )
@@ -72,12 +73,13 @@ from flet_app.views import (  # noqa: E402
 DESTINATIONS = [
     (ft.Icons.DASHBOARD_OUTLINED, ft.Icons.DASHBOARD, "대시보드", dashboard_view),
     (ft.Icons.EDIT_OUTLINED, ft.Icons.EDIT, "워크벤치", workbench_view),
+    (ft.Icons.FACT_CHECK_OUTLINED, ft.Icons.FACT_CHECK, "글 진단", post_audit_view),
     (ft.Icons.ARTICLE_OUTLINED, ft.Icons.ARTICLE, "뉴스 큐레이션", news_curation_view),
     (ft.Icons.STYLE_OUTLINED, ft.Icons.STYLE, "브랜드 킷", brand_kit_view),
     (ft.Icons.SEND_OUTLINED, ft.Icons.SEND, "네이버 게시", naver_publish_view),
     (ft.Icons.SETTINGS_OUTLINED, ft.Icons.SETTINGS, "설정 · 토큰", settings_view),
 ]
-DEFAULT_INDEX = 3  # 🧵 브랜드 킷
+DEFAULT_INDEX = 4  # 🧵 브랜드 킷
 WORKBENCH_INDEX = 1  # DESTINATIONS 안 "워크벤치" 위치 — state.navigate_to_workbench가 씀
 
 

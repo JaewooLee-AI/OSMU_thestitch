@@ -24,7 +24,6 @@ assume a real person is at the keyboard.
 """
 from __future__ import annotations
 
-import html
 import sys
 import threading
 import time
@@ -66,14 +65,13 @@ def _human_delay(lo: float = _HUMAN_DELAY[0], hi: float = _HUMAN_DELAY[1]) -> No
 
 
 def _text_segment_to_html(text: str) -> str:
-    """Wraps each line in a <p> for the rich-HTML clipboard paste.
-
-    Escapes first: the body is Korean marketing prose, but an unescaped "&" or
-    "<" (a stray "<브랜드>" or "A&B") would be parsed as markup by Naver's
-    editor and silently swallow the surrounding text.
+    """Wraps each line in a <p> for the rich-HTML clipboard paste, with
+    '■ 소제목' lines in bold — see ai_workers/body_format.to_html (which also
+    escapes, so a stray "<브랜드>" or "A&B" can't swallow the text around it).
     """
-    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
-    return "".join(f"<p>{html.escape(p)}</p>" for p in paragraphs)
+    from ai_workers.body_format import to_html
+
+    return to_html(text)
 
 
 def _stage_images(rel_paths: list, dest_dir: Path) -> list:
@@ -399,6 +397,73 @@ def _upload_photo_at_cursor(page, editor_frame, file_path: Path) -> bool:
     return False
 
 
+# 네이버 스마트에디터의 사진 설명 칸. 실제 계정 DOM으로 아직 검증하지 못해
+# 후보를 여러 개 두고, 모두 실패하면 자리표시 문구로 찾는다. 찾은 칸 수가
+# 올린 사진 수와 다르면 아예 입력하지 않는다 — 설명이 한 칸씩 밀려 엉뚱한
+# 사진에 붙는 것이 비어 있는 것보다 나쁘다.
+_CAPTION_SELECTORS = [
+    ".se-component.se-image .se-caption",
+    ".se-component.se-image .se-module-text",
+    ".se-caption",
+]
+_CAPTION_PLACEHOLDER = "사진 설명을 입력하세요"
+
+
+def _caption_slots(editor_frame) -> list:
+    for sel in _CAPTION_SELECTORS:
+        try:
+            found = editor_frame.query_selector_all(sel)
+        except Exception:  # noqa: BLE001
+            found = []
+        if found:
+            print(f"[naver_paste_worker] caption slots via '{sel}': {len(found)}")
+            return found
+    try:
+        found = editor_frame.locator(f"text={_CAPTION_PLACEHOLDER}").element_handles()
+        if found:
+            print(f"[naver_paste_worker] caption slots via placeholder text: {len(found)}")
+        return found
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _fill_photo_captions(page, editor_frame, captions: list) -> int:
+    """Types each caption into its photo's 사진 설명 line, in upload order.
+
+    Runs once, after every paragraph and photo is in — typing into a caption
+    mid-paste would leave the cursor inside it and the next paragraph would be
+    pasted into the caption. Returns how many captions landed (verified by
+    reading the slot back); 0 when the slots can't be matched one-to-one.
+    """
+    wanted = [c for c in captions]
+    if not any(wanted):
+        return 0
+    slots = _caption_slots(editor_frame)
+    if len(slots) != len(wanted):
+        print(
+            f"[naver_paste_worker] {len(slots)} caption slots for {len(wanted)} uploaded photos — "
+            "not typing captions, to avoid attaching them to the wrong photo"
+        )
+        return 0
+    filled = 0
+    for slot, caption in zip(slots, wanted):
+        if not caption:
+            continue
+        try:
+            slot.scroll_into_view_if_needed(timeout=2000)
+            slot.click(force=True)
+            _human_delay(0.3, 0.5)
+            page.keyboard.type(caption, delay=12)
+            _human_delay(0.3, 0.5)
+            if caption[:6] in (slot.inner_text() or ""):
+                filled += 1
+            else:
+                print(f"[naver_paste_worker] caption did not land: '{caption}'")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[naver_paste_worker] caption typing failed: {exc}")
+    return filled
+
+
 def _log_visible_buttons(editor_frame, page, when: str) -> None:
     """List currently visible buttons/menu items so a follow-up submenu
     selector can be added without another round of manual console digging."""
@@ -529,6 +594,8 @@ def _run(campaign_id: str, on_status: Callable[[str], None]) -> None:
                     _PASTE_LOCK.acquire()
                 paste_lock_held = True
                 failed_photos: list = []
+                uploaded_photos: list = []
+                photo_captions = campaign.get("photo_captions") or {}
                 title_ok = True
 
                 # --- Body: clear first, before touching the title ---
@@ -610,7 +677,17 @@ def _run(campaign_id: str, on_status: Callable[[str], None]) -> None:
                         if not uploaded:
                             print(f"[naver_paste_worker] photo upload failed for '{value}'")
                             failed_photos.append(value)
+                        else:
+                            uploaded_photos.append(value)
                         _human_delay(1.5, 2.0)
+
+                # 사진 설명은 본문과 사진을 다 넣은 뒤에 한 번에 — _fill_photo_captions 참고.
+                wanted_captions = [photo_captions.get(v, "") for v in uploaded_photos]
+                captions_missed = 0
+                if any(wanted_captions):
+                    on_status("사진 설명 입력 중…")
+                    filled = _fill_photo_captions(page, editor_frame, wanted_captions)
+                    captions_missed = sum(1 for c in wanted_captions if c) - filled
 
                 # 제목이 비어 보이면 다시 채운다 — 위에서 본문보다 먼저 채우도록
                 # 순서를 바꿨지만, 그것과 무관하게 다른 경로로 지워질 가능성까지
@@ -680,6 +757,11 @@ def _run(campaign_id: str, on_status: Callable[[str], None]) -> None:
                     )
                 if not title_ok:
                     warnings.append("제목을 자동으로 입력하지 못했습니다. Chrome 창에서 제목을 직접 확인해주세요.")
+                if captions_missed > 0:
+                    warnings.append(
+                        f"사진 설명 {captions_missed}개를 자동으로 넣지 못했습니다. 앱 [네이버 게시] 화면의 "
+                        "'사진 설명'을 복사해 각 사진 아래에 넣어주세요."
+                    )
                 if warnings:
                     repo.update_campaign(campaign_id, publish_error="⚠️ " + " / ".join(warnings))
                     on_status("⚠️ 붙여넣기는 끝났지만 확인이 필요합니다 — " + " / ".join(warnings))

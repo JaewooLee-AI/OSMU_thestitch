@@ -81,7 +81,14 @@ def closest_previous(content: str, history: List[dict]) -> Tuple[Optional[dict],
 
 
 def _sentences(content: str) -> List[str]:
-    text = IMAGE_TAG_RE.sub("\n", content or "")
+    # 소제목 줄은 문장이 아닙니다 — 첫 문장 자리에 소제목이 잡히면 '최근 글과
+    # 다른 첫 문장' 지시가 소제목끼리의 비교가 됩니다.
+    from ai_workers.body_format import heading_text
+
+    text = "\n".join(
+        line for line in (content or "").split("\n") if heading_text(line) is None
+    )
+    text = IMAGE_TAG_RE.sub("\n", text)
     text = _SOURCE_FOOTER_RE.sub("", text)
     return [s.strip() for s in _SENTENCE_RE.findall(text) if len(s.strip()) >= 5]
 
@@ -110,3 +117,80 @@ def report(content: str, history: List[dict]) -> dict:
     if similar is not None and score >= SIMILARITY_THRESHOLD:
         result["similar_to"] = similar.get("title") or "(제목 없음)"
     return result
+
+
+# --- stock phrases ------------------------------------------------------------
+# The 4-gram overlap above catches a post that copies another. It does not
+# catch the more common failure: posts that say different things in the same
+# stock phrases. Over eleven posts '가장 행복한 날 입었던' appeared in eight,
+# '정성' in ten, '소중한' in nine, and eight ended on the same 옷장 속 한복 기부
+# line — so posts about similar products read as one post, and the marketer
+# rewrote them by hand. Those phrases are found here, from the blog's own
+# recent posts, and the draft is told not to use them this time.
+#
+# Brand-agnostic: nothing is listed by hand. A phrase qualifies by recurring
+# across recent posts, and anything containing a brand term or SEO keyword is
+# skipped — those are meant to repeat.
+
+# A phrase is "stock" once it shows up in this share of recent posts…
+STOCK_PHRASE_SHARE = 0.4
+# …and in at least this many of them, so two posts can't define a habit.
+STOCK_PHRASE_MIN_POSTS = 3
+STOCK_PHRASE_LIMIT = 8
+_WORD_RE = re.compile(r"[0-9A-Za-z가-힣]+")
+# Grammar, not style: a phrase made only of these ('수 있습니다') recurs in
+# every Korean text and banning it would just make sentences awkward.
+_FUNCTION_WORDS = {
+    "수", "있습니다", "있어요", "있는", "있고", "합니다", "해요", "하는", "하고", "드립니다",
+    "드려요", "됩니다", "돼요", "되는", "것", "것이", "거예요", "그", "이", "더", "및", "등", "또",
+}
+
+
+def _word_ngrams(text: str, sizes=(2, 3, 4)) -> set:
+    from ai_workers.body_format import strip_markers
+
+    text = IMAGE_TAG_RE.sub("\n", strip_markers(text or ""))
+    text = _SOURCE_FOOTER_RE.sub("", text)
+    grams = set()
+    for sentence in _SENTENCE_RE.findall(text):
+        words = _WORD_RE.findall(sentence)
+        for n in sizes:
+            for i in range(len(words) - n + 1):
+                grams.add(" ".join(words[i:i + n]))
+    return grams
+
+
+def stock_phrases(history: List[dict], protected: List[str] | None = None) -> List[str]:
+    """Multi-word phrases that recur across recent posts, longest first."""
+    bodies = [post.get("content") or "" for post in history if (post.get("content") or "").strip()]
+    if len(bodies) < STOCK_PHRASE_MIN_POSTS:
+        return []
+    need = max(STOCK_PHRASE_MIN_POSTS, int(len(bodies) * STOCK_PHRASE_SHARE + 0.999))
+    counts: dict = {}
+    for body in bodies:
+        for gram in _word_ngrams(body):
+            counts[gram] = counts.get(gram, 0) + 1
+    guard = [t.lower() for t in (protected or []) if t and len(t) >= 2]
+    frequent = [
+        gram for gram, n in counts.items()
+        if n >= need and len(gram.replace(" ", "")) >= 5
+        and not all(w in _FUNCTION_WORDS for w in gram.split())
+        and not any(t in gram.lower() or gram.lower() in t for t in guard)
+    ]
+    # Longest first, then drop phrases contained in an already-kept one —
+    # '행복한 날 입었던' adds nothing once '가장 행복한 날 입었던' is listed.
+    frequent.sort(key=len, reverse=True)
+    kept: List[str] = []
+    for gram in frequent:
+        if any(gram in k for k in kept):
+            continue
+        kept.append(gram)
+    kept.sort(key=lambda g: (-counts[g], -len(g)))
+    return kept[:STOCK_PHRASE_LIMIT]
+
+
+def stock_phrases_used(content: str, phrases: List[str]) -> List[str]:
+    """Which of `phrases` the new post still uses — report only."""
+    grams = _word_ngrams(content)
+    return [p for p in phrases if p in grams]
+
