@@ -397,34 +397,122 @@ def _upload_photo_at_cursor(page, editor_frame, file_path: Path) -> bool:
     return False
 
 
-# 네이버 스마트에디터의 사진 설명 칸. 실제 계정 DOM으로 아직 검증하지 못해
-# 후보를 여러 개 두고, 모두 실패하면 자리표시 문구로 찾는다. 찾은 칸 수가
-# 올린 사진 수와 다르면 아예 입력하지 않는다 — 설명이 한 칸씩 밀려 엉뚱한
-# 사진에 붙는 것이 비어 있는 것보다 나쁘다.
-_CAPTION_SELECTORS = [
-    ".se-component.se-image .se-caption",
-    ".se-component.se-image .se-module-text",
-    ".se-caption",
+# 네이버 스마트에디터의 사진 설명 칸. 첫 실게시에서 고정 선택자로는 칸을 찾지
+# 못했다(2026-10). 그래서 문서 전체에서 '설명 칸'을 찾는 대신, 사진이 들어 있는
+# 컴포넌트를 순서대로 찾고 그 안에서 설명 칸을 찾는다. 칸이 안 보이면 사진을
+# 한 번 클릭해(선택하면 칸이 나타나는 편집기 동작 대비) 다시 찾는다. 컴포넌트
+# 수가 올린 사진 수와 다르면 입력하지 않는다 — 설명이 한 칸씩 밀려 엉뚱한
+# 사진에 붙는 것이 비어 있는 것보다 나쁘다. 실패하면 구조를 진단 파일로 남긴다.
+_PHOTO_COMPONENT_SELECTORS = [
+    ".se-component.se-image",
+    ".se-component.se-imageStrip",
+    ".se-component.se-imageGroup",
 ]
-_CAPTION_PLACEHOLDER = "사진 설명을 입력하세요"
+_CAPTION_IN_COMPONENT = [
+    ".se-caption .se-text-paragraph",
+    ".se-caption",
+    "[class*='caption'] .se-text-paragraph",
+    "[class*='caption']",
+    ".se-module-text .se-text-paragraph",
+]
+_CAPTION_DEBUG_FILE = "naver_caption_debug.json"
+
+_PHOTO_COMPONENTS_JS = """
+() => {
+  const comps = Array.from(document.querySelectorAll('.se-component'))
+    .filter(c => c.querySelector('img') && !c.closest('.se-documentTitle'));
+  return comps.map(c => ({
+    cls: c.className,
+    captionLike: Array.from(c.querySelectorAll('[class*="caption"], .se-module-text, [contenteditable]'))
+      .slice(0, 6).map(e => (e.tagName + '.' + (e.className || '')).slice(0, 160)),
+    placeholder: Array.from(c.querySelectorAll('*')).some(e => /사진 설명/.test(e.textContent || '')),
+    html: c.outerHTML.slice(0, 1500),
+  }));
+}
+"""
 
 
-def _caption_slots(editor_frame) -> list:
-    for sel in _CAPTION_SELECTORS:
+def _photo_components(editor_frame) -> list:
+    for sel in _PHOTO_COMPONENT_SELECTORS:
         try:
             found = editor_frame.query_selector_all(sel)
         except Exception:  # noqa: BLE001
             found = []
         if found:
-            print(f"[naver_paste_worker] caption slots via '{sel}': {len(found)}")
+            print(f"[naver_paste_worker] photo components via '{sel}': {len(found)}", flush=True)
             return found
+    return []
+
+
+_SCROLL_JS = "e => e.scrollIntoView({block: 'center'})"
+
+# Puts the caret at the end of a caption element even when Playwright
+# considers it not visible — typing then goes into it.
+_CARET_JS = """
+e => {
+  e.scrollIntoView({block: 'center'});
+  const p = e.querySelector('.se-text-paragraph') || e;
+  const r = document.createRange();
+  r.selectNodeContents(p);
+  r.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+  if (p.focus) p.focus();
+}
+"""
+
+
+def _visible(el) -> bool:
     try:
-        found = editor_frame.locator(f"text={_CAPTION_PLACEHOLDER}").element_handles()
-        if found:
-            print(f"[naver_paste_worker] caption slots via placeholder text: {len(found)}")
-        return found
+        box = el.bounding_box()
+        return bool(box and box["width"] > 0 and box["height"] > 0)
     except Exception:  # noqa: BLE001
-        return []
+        return False
+
+
+def _caption_slot(page, component):
+    """(caption element, visible?) inside one photo component, or (None, False).
+
+    Confirmed on the live editor (2026-10): `.se-component.se-image
+    .se-caption` exists for every photo but is not visible until the photo
+    is selected — Playwright's scroll/click waited on it and timed out. So
+    the photo is clicked first, and scrolling uses plain JS, which works on
+    hidden elements where Playwright's actionability checks refuse.
+    """
+    try:
+        img = component.query_selector("img") or component
+        img.evaluate(_SCROLL_JS)
+        img.click(force=True)
+        _human_delay(0.5, 0.8)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[naver_paste_worker] selecting photo before caption failed: {exc}", flush=True)
+    hidden = None
+    for sel in _CAPTION_IN_COMPONENT:
+        try:
+            for slot in component.query_selector_all(sel):
+                if _visible(slot):
+                    return slot, True
+                hidden = hidden or slot
+        except Exception:  # noqa: BLE001
+            continue
+    return hidden, False
+
+
+def _dump_caption_debug(editor_frame, reason: str) -> None:
+    """Writes the photo components' structure to data/ so the selectors can
+    be fixed from the real editor DOM instead of guessed."""
+    try:
+        import json as _json
+
+        from core.db import DATA_DIR
+
+        info = editor_frame.evaluate(_PHOTO_COMPONENTS_JS)
+        path = DATA_DIR / _CAPTION_DEBUG_FILE
+        path.write_text(_json.dumps({"reason": reason, "components": info}, ensure_ascii=False, indent=1))
+        print(f"[naver_paste_worker] caption debug written to {path}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[naver_paste_worker] caption debug dump failed: {exc}", flush=True)
 
 
 def _fill_photo_captions(page, editor_frame, captions: list) -> int:
@@ -433,34 +521,49 @@ def _fill_photo_captions(page, editor_frame, captions: list) -> int:
     Runs once, after every paragraph and photo is in — typing into a caption
     mid-paste would leave the cursor inside it and the next paragraph would be
     pasted into the caption. Returns how many captions landed (verified by
-    reading the slot back); 0 when the slots can't be matched one-to-one.
+    reading the slot back); 0 when the photos can't be matched one-to-one.
     """
-    wanted = [c for c in captions]
-    if not any(wanted):
+    if not any(captions):
         return 0
-    slots = _caption_slots(editor_frame)
-    if len(slots) != len(wanted):
+    components = _photo_components(editor_frame)
+    if len(components) != len(captions):
         print(
-            f"[naver_paste_worker] {len(slots)} caption slots for {len(wanted)} uploaded photos — "
-            "not typing captions, to avoid attaching them to the wrong photo"
+            f"[naver_paste_worker] {len(components)} photo components for {len(captions)} uploaded photos — "
+            "not typing captions, to avoid attaching them to the wrong photo",
+            flush=True,
         )
+        _dump_caption_debug(editor_frame, f"{len(components)} components for {len(captions)} photos")
         return 0
-    filled = 0
-    for slot, caption in zip(slots, wanted):
+    filled, missed_slot = 0, False
+    for component, caption in zip(components, captions):
         if not caption:
             continue
+        slot, visible = _caption_slot(page, component)
+        if slot is None:
+            missed_slot = True
+            print("[naver_paste_worker] no caption slot inside a photo component", flush=True)
+            continue
         try:
-            slot.scroll_into_view_if_needed(timeout=2000)
-            slot.click(force=True)
+            if visible:
+                slot.evaluate(_SCROLL_JS)
+                slot.click(force=True)
+            else:
+                print("[naver_paste_worker] caption slot still hidden after selecting the photo — placing caret by script", flush=True)
+                slot.evaluate(_CARET_JS)
             _human_delay(0.3, 0.5)
             page.keyboard.type(caption, delay=12)
             _human_delay(0.3, 0.5)
-            if caption[:6] in (slot.inner_text() or ""):
+            landed = caption[:6] in (slot.inner_text() or "") or caption[:6] in (component.inner_text() or "")
+            if landed:
                 filled += 1
             else:
-                print(f"[naver_paste_worker] caption did not land: '{caption}'")
+                missed_slot = True
+                print(f"[naver_paste_worker] caption did not land: '{caption}'", flush=True)
         except Exception as exc:  # noqa: BLE001
-            print(f"[naver_paste_worker] caption typing failed: {exc}")
+            missed_slot = True
+            print(f"[naver_paste_worker] caption typing failed: {exc}", flush=True)
+    if missed_slot:
+        _dump_caption_debug(editor_frame, f"filled {filled}/{sum(1 for c in captions if c)}")
     return filled
 
 

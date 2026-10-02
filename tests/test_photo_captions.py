@@ -37,9 +37,23 @@ def test_no_call_when_all_captioned(monkeypatch):
 class _Slot:
     def __init__(self, page):
         self.page, self.text = page, ""
-    def scroll_into_view_if_needed(self, timeout=0): pass
+    def evaluate(self, js): self.page.focused = self    # scroll / caret script
+    def bounding_box(self): return {"width": 100, "height": 20}
     def click(self, force=False): self.page.focused = self
     def inner_text(self): return self.text
+
+
+class _Component:
+    """A photo component whose caption only exists after the photo is clicked."""
+    def __init__(self, page, hidden_until_click=False):
+        self.slot, self.revealed = _Slot(page), not hidden_until_click
+    def query_selector(self, sel):
+        return self if sel == "img" else None
+    def query_selector_all(self, sel):
+        return [self.slot] if self.revealed and sel == ".se-caption .se-text-paragraph" else []
+    def evaluate(self, js): pass
+    def click(self, force=False): self.revealed = True
+    def inner_text(self): return self.slot.text
 
 
 class _Keyboard:
@@ -52,22 +66,23 @@ class _Page:
 
 
 class _Frame:
-    def __init__(self, slots): self.slots = slots
-    def query_selector_all(self, sel): return self.slots if sel == ".se-caption" else []
+    def __init__(self, comps): self.comps = comps
+    def query_selector_all(self, sel): return self.comps if sel == ".se-component.se-image" else []
+    def evaluate(self, js): raise RuntimeError("no DOM in tests")
 
 
 def test_fill_captions_in_order_and_refuses_mismatch(monkeypatch):
     from ai_workers import naver_paste_worker as w
     monkeypatch.setattr(w, "_human_delay", lambda *a, **k: None)
     page = _Page()
-    slots = [_Slot(page), _Slot(page)]
-    assert w._fill_photo_captions(page, _Frame(slots), ["첫 사진 설명", "둘째 사진 설명"]) == 2
-    assert [s.text for s in slots] == ["첫 사진 설명", "둘째 사진 설명"]
+    comps = [_Component(page), _Component(page, hidden_until_click=True)]
+    assert w._fill_photo_captions(page, _Frame(comps), ["첫 사진 설명", "둘째 사진 설명"]) == 2
+    assert [c.slot.text for c in comps] == ["첫 사진 설명", "둘째 사진 설명"]
 
     page2 = _Page()
-    one_slot = [_Slot(page2)]
-    assert w._fill_photo_captions(page2, _Frame(one_slot), ["가 설명입니다", "나 설명입니다"]) == 0
-    assert one_slot[0].text == ""
+    one = [_Component(page2)]
+    assert w._fill_photo_captions(page2, _Frame(one), ["가 설명입니다", "나 설명입니다"]) == 0
+    assert one[0].slot.text == ""
 
 
 def test_captions_copy_text_follows_post_order():
