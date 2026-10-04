@@ -101,15 +101,10 @@ def test_connection(vendor: str, model_name: str, api_key: str) -> Tuple[bool, s
                 messages=[{"role": "user", "content": "Hello"}],
             )
         elif vendor == "google":
-            from google import genai
-            from google.genai import types
-
-            client = genai.Client(api_key=api_key)
-            client.models.generate_content(
-                model=model_name,
-                contents="Hello",
-                config=types.GenerateContentConfig(max_output_tokens=5),
-            )
+            # Same request shape as real generation (thinking setting included):
+            # a bare test passed for gemini-3.5-flash-lite while every draft
+            # on it failed, so '연결 정상' has to mean generation works.
+            _call_google(model_name, api_key, "Hello", None, 16)
         else:
             return False, f"Unsupported vendor: {vendor}"
         return True, "연결 정상"
@@ -242,6 +237,28 @@ def _call_anthropic(model_name, api_key, prompt, system, max_tokens, thinking=Fa
     return text, usage_in, usage_out, res.stop_reason == "max_tokens"
 
 
+# Models that turned out to reject thinking_budget=0, so later calls in this
+# process skip the attempt that is certain to fail. vision.py shares it.
+GOOGLE_NO_ZERO_THINKING: set = set()
+
+
+def google_rejects_zero_thinking(exc: Exception) -> bool:
+    """Whether a Gemini error is the 'thinking_budget=0 not allowed' refusal.
+
+    2.5 Pro says so in words, but gemini-3.5-flash-lite answers the same
+    setting with a bare '400 INVALID_ARGUMENT — Request contains an invalid
+    argument'. Matching only on 'thinking' made every call on that model fail
+    while [연결 테스트], which sends no thinking setting, reported 연결 정상.
+    A generic 400 is retried once without the setting; if it was some other
+    bad argument the retry fails with the same error and nothing is lost.
+    """
+    text = str(exc).lower()
+    if "thinking" in text:
+        return True
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    return code == 400 and "invalid argument" in text
+
+
 def _call_google(model_name, api_key, prompt, system, max_tokens, thinking=False):
     from google.genai import types
 
@@ -268,18 +285,19 @@ def _call_google(model_name, api_key, prompt, system, max_tokens, thinking=False
     # `thinking=True` leaves the budget to the model (its own default, which
     # is dynamic on 2.5/3.x) with headroom on top, instead of forcing it off.
     # Requested only for the blog draft — see generate_text.
-    if thinking:
+    if thinking or model_name in GOOGLE_NO_ZERO_THINKING:
         res = client.models.generate_content(model=model_name, contents=prompt, config=_config(False))
-        return _google_result(res)
-    try:
-        res = client.models.generate_content(model=model_name, contents=prompt, config=_config(True))
-    except Exception as exc:  # noqa: BLE001
-        # Some models (e.g. 2.5 Pro) refuse a zero thinking budget. Fall back
-        # to thinking-on with headroom rather than failing the call — but only
-        # for that specific rejection, not for auth/quota errors.
-        if "thinking" not in str(exc).lower():
-            raise
-        res = client.models.generate_content(model=model_name, contents=prompt, config=_config(False))
+    else:
+        try:
+            res = client.models.generate_content(model=model_name, contents=prompt, config=_config(True))
+        except Exception as exc:  # noqa: BLE001
+            # Some models refuse a zero thinking budget. Fall back to the
+            # model's default with headroom rather than failing the call — but
+            # only for that rejection, not for auth/quota errors.
+            if not google_rejects_zero_thinking(exc):
+                raise
+            res = client.models.generate_content(model=model_name, contents=prompt, config=_config(False))
+            GOOGLE_NO_ZERO_THINKING.add(model_name)
     return _google_result(res)
 
 
